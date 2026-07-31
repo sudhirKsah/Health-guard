@@ -1,0 +1,21 @@
+{
+  "name": "health-guard",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @health-guard/web",
+    "build:web": "npm run build --workspace @health-guard/web",
+    "lint:web": "npm run lint --workspace @health-guard/web",
+    "typecheck:web": "npm run typecheck --workspace @health-guard/web",
+    "db:start": "bash scripts/db/start.sh",
+    "db:status": "bash scripts/db/status.sh",
+    "db:stop": "bash scripts/db/stop.sh"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  }
+}

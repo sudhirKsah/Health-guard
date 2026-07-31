@@ -1,0 +1,31 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+.next/
+dist/
+build/
+
+# Python tooling
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+**/.ruff_cache/
+
+# Local databases, logs, and editor state
+*.sqlite3
+.postgres-data/
+.postgres-socket/
+.postgres.log
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Agents
+.agents/
+.codex/
