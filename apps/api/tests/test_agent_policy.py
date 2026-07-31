@@ -1,19 +1,27 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.agent.policy import ApprovedVariantPolicy, OfferCandidate, choose_offer, project_stock
 from app.agent.state import AgentState, validate_transition
 from app.agent.tools import CatalogSearchTool
+from app.config import Settings
+from app.integrations.ucp import UcpAdapter
 
 
-def approval(*, enabled: bool = True, rank: int = 1) -> ApprovedVariantPolicy:
-    return ApprovedVariantPolicy(
-        merchant_authorization_id="merchant-a",
-        merchant_product_id="product-a",
-        merchant_variant_id="variant-a",
-        merchant_is_enabled=enabled,
-        merchant_preference_rank=rank,
-    )
+def approval(*, enabled: bool = True, rank: int = 1, **overrides: object) -> ApprovedVariantPolicy:
+    values: dict[str, object] = {
+        "merchant_authorization_id": "merchant-a",
+        "merchant_product_id": "product-a",
+        "merchant_variant_id": "variant-a",
+        "merchant_is_enabled": enabled,
+        "merchant_preference_rank": rank,
+        "mandate_status": "active",
+        "mandate_approved_amount": Decimal("600"),
+        "mandate_remaining_amount": Decimal("600"),
+        "mandate_valid_until": datetime.now(UTC) + timedelta(days=1),
+    }
+    values.update(overrides)
+    return ApprovedVariantPolicy(**values)  # type: ignore[arg-type]
 
 
 def offer(**overrides: object) -> OfferCandidate:
@@ -53,6 +61,10 @@ def test_policy_rejects_late_offer_and_selects_eligible_exact_variant() -> None:
             merchant_variant_id="variant-b",
             merchant_is_enabled=True,
             merchant_preference_rank=1,
+            mandate_status="active",
+            mandate_approved_amount=Decimal("600"),
+            mandate_remaining_amount=Decimal("600"),
+            mandate_valid_until=datetime.now(UTC) + timedelta(days=1),
         ),
     ]
 
@@ -75,6 +87,10 @@ def test_policy_uses_merchant_preference_for_price_and_arrival_tie() -> None:
             merchant_variant_id="variant-a",
             merchant_is_enabled=True,
             merchant_preference_rank=1,
+            mandate_status="active",
+            mandate_approved_amount=Decimal("600"),
+            mandate_remaining_amount=Decimal("600"),
+            mandate_valid_until=datetime.now(UTC) + timedelta(days=1),
         ),
     ]
 
@@ -102,13 +118,33 @@ def test_policy_rejects_paused_merchant_and_unapproved_product() -> None:
     ]
 
 
+def test_policy_blocks_inactive_or_over_cap_mandates() -> None:
+    inactive = choose_offer(
+        offers=[offer()],
+        approved_variants=[approval(mandate_status="paused")],
+        days_until_stockout=Decimal("4"),
+    )
+    over_cap = choose_offer(
+        offers=[offer()],
+        approved_variants=[approval(mandate_approved_amount=Decimal("449"))],
+        days_until_stockout=Decimal("4"),
+    )
+
+    assert inactive.rejected[0].reason == "mandate_not_active"
+    assert over_cap.rejected[0].reason == "mandate_amount_cap_exceeded"
+
+
 def test_catalog_tool_blocks_without_a_health_guard_profile_instead_of_returning_fake_offers() -> (
     None
 ):
-    result = CatalogSearchTool().run(approved_variant_count=1)
+    result, offers = CatalogSearchTool(UcpAdapter(Settings(health_guard_ucp_profile_url=None))).run(
+        query="ashwagandha",
+        configured_variants=[],
+    )
 
     assert result.status == "blocked"
     assert result.summary["reason"] == "health_guard_ucp_profile_url_not_configured"
+    assert offers == []
 
 
 def test_agent_state_machine_disallows_skipping_from_observe_to_payment() -> None:

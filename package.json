@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "dev:web": "npm run dev --workspace @health-guard/web",
+    "dev:api": ".venv/bin/uvicorn app.main:app --app-dir apps/api --reload",
     "build:web": "npm run build --workspace @health-guard/web",
     "lint:web": "npm run lint --workspace @health-guard/web",
     "typecheck:web": "npm run typecheck --workspace @health-guard/web",

@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.agent.policy import POLICY_VERSION
+from app.agent.policy import POLICY_VERSION, ApprovedVariantPolicy, OfferCandidate, choose_offer
+from app.agent.sandbox_settlement import SandboxSettlementExecutor
 from app.agent.state import AgentState, validate_transition
-from app.agent.tools import CatalogSearchTool, InventoryTool
+from app.agent.tools import CatalogSearchTool, ConfiguredVariant, InventoryTool
 from app.models import (
     AgentRun,
     AgentStep,
     ApprovedVariant,
     Beneficiary,
     MerchantAuthorization,
+    OfferSnapshot,
     ProductEquivalenceSet,
     Supply,
     User,
@@ -105,18 +108,29 @@ class ReplenishmentAgent:
             )
 
         self._transition(run, AgentState.DISCOVER)
-        configured_variants = self.db.scalar(
-            select(func.count(ApprovedVariant.id))
-            .join(ApprovedVariant.equivalence_set)
-            .join(ApprovedVariant.merchant_authorization)
-            .where(
-                ProductEquivalenceSet.supply_id == supply.id,
-                MerchantAuthorization.is_enabled.is_(True),
+        configured_variants = list(
+            self.db.execute(
+                select(ApprovedVariant, MerchantAuthorization)
+                .join(ApprovedVariant.equivalence_set)
+                .join(ApprovedVariant.merchant_authorization)
+                .where(
+                    ProductEquivalenceSet.supply_id == supply.id,
+                    MerchantAuthorization.is_enabled.is_(True),
+                )
+                .order_by(MerchantAuthorization.preference_rank)
             )
         )
-        # The Phase 4 adapter supplies catalog details. This phase records only the configured count.
-        catalog_result = self.catalog_search_tool.run(
-            approved_variant_count=configured_variants or 0
+        catalog_result, live_offers = self.catalog_search_tool.run(
+            query=supply.name,
+            configured_variants=[
+                ConfiguredVariant(
+                    merchant_authorization_id=authorization.id,
+                    merchant_key=authorization.merchant_key,
+                    merchant_product_id=variant.merchant_product_id,
+                    merchant_variant_id=variant.merchant_variant_id,
+                )
+                for variant, authorization in configured_variants
+            ],
         )
         self._record_step(
             run,
@@ -126,27 +140,147 @@ class ReplenishmentAgent:
             input_summary={"supply_id": str(supply.id), "query": supply.name},
             output_summary=catalog_result.summary,
         )
+        snapshots = []
+        for offer in live_offers:
+            snapshot = OfferSnapshot(
+                agent_run_id=run.id,
+                merchant_authorization_id=offer.merchant_authorization_id,
+                merchant_product_id=offer.merchant_product_id,
+                merchant_variant_id=offer.merchant_variant_id,
+                product_title=offer.product_title,
+                variant_title=offer.variant_title,
+                available=offer.available,
+                currency=offer.currency,
+                unit_price=offer.unit_price,
+                shipping_price=0,
+                landed_price=offer.unit_price,
+                estimated_arrival_days=None,
+                source_status="catalog_live",
+            )
+            self.db.add(snapshot)
+            snapshots.append(snapshot)
+        self.db.flush()
         self._transition(run, AgentState.DECIDE)
+        sandbox_executor = SandboxSettlementExecutor(self.db)
+        sandbox_settlement = sandbox_executor.enabled()
+        policy = choose_offer(
+            offers=[
+                OfferCandidate(
+                    merchant_authorization_id=str(offer.merchant_authorization_id),
+                    merchant_product_id=offer.merchant_product_id,
+                    merchant_variant_id=offer.merchant_variant_id,
+                    available=offer.available,
+                    landed_price=offer.unit_price,
+                    # The official Prava sandbox settlement flow tests payment authorisation and
+                    # reporting only; it does not create a physical merchant delivery. Do not apply
+                    # this exception in production, where a delivery-aware quote remains mandatory.
+                    arrival_days=Decimal("0") if sandbox_settlement else None,
+                )
+                for offer in live_offers
+            ],
+            approved_variants=[
+                ApprovedVariantPolicy(
+                    merchant_authorization_id=str(authorization.id),
+                    merchant_product_id=variant.merchant_product_id,
+                    merchant_variant_id=variant.merchant_variant_id,
+                    merchant_is_enabled=authorization.is_enabled,
+                    merchant_preference_rank=authorization.preference_rank,
+                    mandate_status=authorization.mandate_status,
+                    mandate_approved_amount=authorization.mandate_approved_amount,
+                    mandate_remaining_amount=authorization.mandate_remaining_amount,
+                    health_guard_stop_after=authorization.health_guard_stop_after,
+                    mandate_valid_until=authorization.mandate_valid_until,
+                )
+                for variant, authorization in configured_variants
+            ],
+            days_until_stockout=projection.days_until_stockout,
+        )
+        decision_reason = (
+            policy.rejected[0].reason if policy.rejected else "no_live_exact_offer_returned"
+        )
         self._record_step(
             run,
             stage="decide",
             tool_name="deterministic_policy_evaluator",
-            status="blocked",
+            status="blocked" if policy.selected is None else "success",
             input_summary={"policy_version": POLICY_VERSION},
             output_summary={
-                "decision": "blocked",
-                "reason": catalog_result.summary["reason"],
-                "payment_tools_available": False,
+                "decision": "blocked" if policy.selected is None else "reorder",
+                "reason": decision_reason if policy.selected is None else None,
+                "live_offer_snapshot_count": len(snapshots),
+                "payment_tools_available": sandbox_settlement,
+                "sandbox_settlement": sandbox_settlement,
             },
         )
+        if policy.selected is not None:
+            selected_authorization = next(
+                authorization
+                for variant, authorization in configured_variants
+                if str(authorization.id) == policy.selected.merchant_authorization_id
+                and variant.merchant_product_id == policy.selected.merchant_product_id
+                and variant.merchant_variant_id == policy.selected.merchant_variant_id
+            )
+            self._transition(run, AgentState.ACT)
+            settlement = sandbox_executor.execute(
+                run=run,
+                authorization=selected_authorization,
+                amount=policy.selected.landed_price,
+                product_description=next(
+                    offer.product_title
+                    for offer in live_offers
+                    if str(offer.merchant_authorization_id)
+                    == policy.selected.merchant_authorization_id
+                    and offer.merchant_product_id == policy.selected.merchant_product_id
+                    and offer.merchant_variant_id == policy.selected.merchant_variant_id
+                ),
+                product_id=policy.selected.merchant_product_id,
+            )
+            self._record_step(
+                run,
+                stage="act",
+                tool_name="prava_sandbox_mandate_settlement",
+                status="success" if settlement.status == "sandbox_settled" else "blocked",
+                input_summary={
+                    "merchant_authorization_id": str(selected_authorization.id),
+                    "amount": f"{policy.selected.landed_price:.2f}",
+                },
+                output_summary={
+                    "status": settlement.status,
+                    "failure_code": settlement.failure_code,
+                    "merchant_fulfillment": "not_available_in_sandbox_settlement",
+                },
+            )
+            if settlement.status == "sandbox_settled":
+                self._transition(run, AgentState.VERIFY)
+                return self._finish(
+                    run,
+                    state=AgentState.COMPLETE,
+                    status="completed",
+                    outcome="sandbox_settled",
+                    explanation=(
+                        "Health Guard completed Prava's documented sandbox mandate charge and settlement "
+                        "flow. This verifies the payment transaction only; it does not create a merchant "
+                        "fulfillment order."
+                    ),
+                )
+            return self._finish(
+                run,
+                state=AgentState.BLOCKED,
+                status="blocked",
+                outcome="blocked",
+                explanation=(
+                    "A live exact offer met the policy, but the Prava sandbox settlement did not complete. "
+                    "No merchant fulfillment outcome was recorded."
+                ),
+            )
         return self._finish(
             run,
             state=AgentState.BLOCKED,
             status="blocked",
             outcome="blocked",
             explanation=(
-                f"{supply.name} is at or below its safety buffer and needs a reorder evaluation, "
-                "but no live eligible quote is available yet. Health Guard did not attempt a payment."
+                f"{supply.name} needs a reorder evaluation. Health Guard found only offers that cannot "
+                "be safely selected yet because a delivery-aware quote is required. No payment was attempted."
             ),
         )
 
@@ -154,7 +288,11 @@ class ReplenishmentAgent:
         return self.db.scalar(
             select(AgentRun)
             .where(AgentRun.owner_id == owner_id, AgentRun.trigger_id == trigger_id)
-            .options(selectinload(AgentRun.steps))
+            .options(
+                selectinload(AgentRun.steps),
+                selectinload(AgentRun.offer_snapshots),
+                selectinload(AgentRun.purchase_order),
+            )
         )
 
     def _record_step(

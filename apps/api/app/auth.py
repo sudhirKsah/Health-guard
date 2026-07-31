@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
 
@@ -16,10 +17,16 @@ from app.models import SessionToken, User
 
 SESSION_DAYS = 30
 _bearer_scheme = HTTPBearer(auto_error=False)
+_prava_email_pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def normalize_email(value: str) -> str:
     return value.strip().lower()
+
+
+def is_valid_prava_email(value: str) -> bool:
+    """Prava requires a deliverable-shaped email for merchant sessions."""
+    return bool(_prava_email_pattern.fullmatch(value))
 
 
 def hash_password(password: str) -> str:

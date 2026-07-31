@@ -3,6 +3,7 @@ import re
 SENSITIVE_PATTERNS = (
     re.compile(r"\b(?:sk|pk)_(?:test|live)_[A-Za-z0-9_-]+\b"),
     re.compile(r"\b(?:token|dynamic_cvv|cvv|cryptogram)\s*[:=]\s*[^\s,]+", re.IGNORECASE),
+    re.compile(r"([?&]key=)[^&\s]+", re.IGNORECASE),
 )
 
 

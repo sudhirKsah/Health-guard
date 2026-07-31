@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.auth import normalize_email
+from app.auth import is_valid_prava_email, normalize_email
 
 
 class ApiModel(BaseModel):
@@ -22,7 +22,7 @@ class RegisterRequest(BaseModel):
     @classmethod
     def normalize(cls, value: str) -> str:
         email = normalize_email(value)
-        if email.count("@") != 1 or email.startswith("@") or email.endswith("@"):
+        if not is_valid_prava_email(email):
             raise ValueError("A valid email address is required")
         return email
 
@@ -118,6 +118,44 @@ class MerchantAuthorizationOut(ApiModel):
     merchant_domain: str
     preference_rank: int
     is_enabled: bool
+    prava_mandate_id: str | None
+    mandate_status: str | None
+    mandate_approved_amount: Decimal | None
+    mandate_remaining_amount: Decimal | None
+    mandate_currency: str | None
+    mandate_frequency: str | None
+    mandate_max_charges: int | None
+    health_guard_stop_after: datetime | None
+    mandate_valid_until: datetime | None
+    mandate_renews_at: datetime | None
+    mandate_synced_at: datetime | None
+
+
+class MandateSetupRequest(BaseModel):
+    approved_amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    currency: str = Field(default="INR", pattern="^[A-Z]{3}$")
+    recurring_frequency: str = Field(default="monthly", pattern="^(weekly|monthly|yearly)$")
+    max_charges: int = Field(default=12, ge=1, le=104)
+    valid_until: datetime
+
+
+class MandateSetupSessionOut(BaseModel):
+    merchant_authorization: MerchantAuthorizationOut
+    iframe_url: str
+    expires_at: datetime | None
+
+
+class MandateActionRequest(BaseModel):
+    confirmed: bool
+
+
+class MandateEventOut(ApiModel):
+    id: UUID
+    event_type: str
+    previous_status: str | None
+    resulting_status: str | None
+    details: dict[str, object]
+    created_at: datetime
 
 
 class EquivalenceSetCreate(BaseModel):
@@ -173,6 +211,15 @@ class AgentRunCreate(BaseModel):
     trigger_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class AgentRunScheduleRequest(BaseModel):
+    run_at: datetime
+
+
+class AgentRunScheduleOut(BaseModel):
+    job_id: str
+    run_at: datetime
+
+
 class AgentStepOut(ApiModel):
     id: UUID
     sequence: int
@@ -203,6 +250,27 @@ class OfferSnapshotOut(ApiModel):
     created_at: datetime
 
 
+class PurchaseOrderOut(ApiModel):
+    id: UUID
+    merchant_authorization_id: UUID
+    charge_reference: str
+    requested_amount: Decimal
+    charged_amount: Decimal | None
+    currency: str
+    status: str
+    prava_mandate_id: str
+    prava_transaction_id: str | None
+    prava_order_id: str | None
+    merchant_order_id: str | None
+    report_status: str | None
+    failure_code: str | None
+    charged_at: datetime | None
+    checkout_completed_at: datetime | None
+    reported_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class AgentRunOut(ApiModel):
     id: UUID
     supply_id: UUID
@@ -219,6 +287,7 @@ class AgentRunOut(ApiModel):
     completed_at: datetime | None
     steps: list[AgentStepOut]
     offer_snapshots: list[OfferSnapshotOut]
+    purchase_order: PurchaseOrderOut | None
 
 
 class AgentRunStartOut(BaseModel):

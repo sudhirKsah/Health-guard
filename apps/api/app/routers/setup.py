@@ -35,10 +35,10 @@ from app.schemas import (
 
 router = APIRouter(prefix="/setup", tags=["care setup"])
 
-MERCHANTS: dict[str, tuple[str, str]] = {
-    "himalaya": ("Himalaya Wellness", "himalayawellness.in"),
-    "oziva": ("Oziva", "oziva.in"),
-    "zandu": ("Zandu Care", "zanducare.com"),
+MERCHANTS: dict[str, tuple[str, str, str]] = {
+    "himalaya": ("Himalaya Wellness", "himalayawellness.in", "https://himalayawellness.in"),
+    "oziva": ("Oziva", "oziva.in", "https://www.oziva.in"),
+    "zandu": ("Zandu Care", "zanducare.com", "https://zanducare.com"),
 }
 
 
@@ -230,7 +230,7 @@ def create_merchant_authorization(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> MerchantAuthorizationOut:
-    merchant_name, merchant_domain = MERCHANTS[payload.merchant_key]
+    merchant_name, merchant_domain, _ = MERCHANTS[payload.merchant_key]
     authorization = MerchantAuthorization(
         owner_id=user.id,
         merchant_key=payload.merchant_key,

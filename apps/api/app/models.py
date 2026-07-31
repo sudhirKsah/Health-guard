@@ -52,6 +52,9 @@ class User(Timestamped, Base):
     agent_runs: Mapped[list[AgentRun]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    purchase_orders: Mapped[list[PurchaseOrder]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
 
 
 class SessionToken(Base):
@@ -130,10 +133,52 @@ class MerchantAuthorization(Timestamped, Base):
     merchant_domain: Mapped[str] = mapped_column(String(255), nullable=False)
     preference_rank: Mapped[int] = mapped_column(Integer, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Prava never returns card credentials as part of mandate management. These fields are
+    # deliberately limited to the owner-approved mandate's safe control-plane state.
+    prava_setup_session_id: Mapped[str | None] = mapped_column(String(255))
+    prava_mandate_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    mandate_status: Mapped[str | None] = mapped_column(String(24))
+    mandate_approved_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    mandate_remaining_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    mandate_currency: Mapped[str | None] = mapped_column(String(3))
+    mandate_frequency: Mapped[str | None] = mapped_column(String(16))
+    mandate_max_charges: Mapped[int | None] = mapped_column(Integer)
+    health_guard_stop_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mandate_valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mandate_renews_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mandate_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     owner: Mapped[User] = relationship(back_populates="merchant_authorizations")
     approved_variants: Mapped[list[ApprovedVariant]] = relationship(
         back_populates="merchant_authorization"
+    )
+    mandate_events: Mapped[list[MandateEvent]] = relationship(
+        back_populates="merchant_authorization", cascade="all, delete-orphan"
+    )
+    purchase_orders: Mapped[list[PurchaseOrder]] = relationship(
+        back_populates="merchant_authorization"
+    )
+
+
+class MandateEvent(Base):
+    """Append-only, credential-free record of a mandate control-plane action."""
+
+    __tablename__ = "mandate_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    merchant_authorization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("merchant_authorizations.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    previous_status: Mapped[str | None] = mapped_column(String(24))
+    resulting_status: Mapped[str | None] = mapped_column(String(24))
+    details: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    merchant_authorization: Mapped[MerchantAuthorization] = relationship(
+        back_populates="mandate_events"
     )
 
 
@@ -228,6 +273,7 @@ class AgentRun(Base):
         cascade="all, delete-orphan",
         order_by="OfferSnapshot.created_at",
     )
+    purchase_order: Mapped[PurchaseOrder | None] = relationship(back_populates="agent_run")
 
 
 class AgentStep(Base):
@@ -294,3 +340,51 @@ class OfferSnapshot(Base):
 
     agent_run: Mapped[AgentRun] = relationship(back_populates="offer_snapshots")
     merchant_authorization: Mapped[MerchantAuthorization] = relationship()
+
+
+class PurchaseOrder(Timestamped, Base):
+    """An idempotent, credential-free record of a proposed or completed replenishment order.
+
+    One row belongs to one agent run. The Prava charge reference is retained so a retry can ask
+    Prava for the same charge, but network-token credentials are never persisted.
+    """
+
+    __tablename__ = "purchase_orders"
+    __table_args__ = (
+        UniqueConstraint("agent_run_id", name="purchase_order_agent_run_unique"),
+        UniqueConstraint("charge_reference", name="purchase_order_charge_reference_unique"),
+        CheckConstraint("requested_amount > 0", name="purchase_order_requested_amount_positive"),
+        CheckConstraint(
+            "charged_amount IS NULL OR charged_amount > 0",
+            name="purchase_order_charged_amount_positive",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    agent_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    merchant_authorization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("merchant_authorizations.id", ondelete="RESTRICT"), index=True, nullable=False
+    )
+    charge_reference: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    charged_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="prepared")
+    prava_mandate_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    prava_transaction_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    prava_order_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    merchant_order_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    report_status: Mapped[str | None] = mapped_column(String(16))
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    charged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkout_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    owner: Mapped[User] = relationship(back_populates="purchase_orders")
+    agent_run: Mapped[AgentRun] = relationship(back_populates="purchase_order")
+    merchant_authorization: Mapped[MerchantAuthorization] = relationship(
+        back_populates="purchase_orders"
+    )

@@ -5,6 +5,8 @@ button, input, select { font: inherit; }
 button { border: 0; border-radius: 9px; padding: 10px 14px; background: #246447; color: #fff; cursor: pointer; font-weight: 700; }
 button:disabled { cursor: wait; opacity: .6; }
 button.quiet { padding: 7px 10px; background: transparent; color: #246447; border: 1px solid #a9c4b2; }
+button.danger { padding: 7px 10px; background: #9f2f20; }
+.button-link { display: inline-block; width: fit-content; border-radius: 9px; padding: 10px 14px; background: #246447; color: #fff; font-weight: 700; text-decoration: none; }
 button.active { background: #246447; }
 .auth-shell, .dashboard-shell { max-width: 1160px; margin: 0 auto; padding: 48px 24px 80px; }
 .auth-shell { max-width: 650px; padding-top: 96px; }
@@ -29,6 +31,14 @@ input, select { min-width: 0; width: 100%; border: 1px solid #b9c9bd; border-rad
 .items li, .supply-list > li { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid #e4ebe0; }
 .items span, .supply-list div { display: grid; gap: 3px; }
 .configured { margin-top: 18px; }
+.mandates { margin-top: 18px; }
+.mandate { display: grid; gap: 12px; padding: 16px 0; border-top: 1px solid #dce5d8; }
+.mandate header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.mandate header div, .approval-panel { display: grid; gap: 5px; }
+.mandate-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.mandate-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.approval-panel { padding: 14px; border: 1px solid #91bb9c; border-radius: 9px; background: #f2f9f2; }
+.approval-panel p { margin: 0; }
 .agent-runs { margin-top: 28px; }
 .section-heading { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
 .section-heading .hint { max-width: 400px; margin: 0; }
@@ -39,6 +49,8 @@ input, select { min-width: 0; width: 100%; border: 1px solid #b9c9bd; border-rad
 .run header div { display: grid; gap: 4px; }
 .run code { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #526154; }
 .run-explanation { font-weight: 700; color: #24543a; }
+.offers { margin: 12px 0; padding: 10px; border-left: 3px solid #91bb9c; background: #f7faf4; }
+.offers p { margin: 6px 0 0; font-size: .88rem; }
 .run ol { margin: 12px 0 0; padding-left: 24px; display: grid; gap: 8px; }
 .run li { padding-left: 2px; }
 .run li strong, .run li span { display: block; }
@@ -49,4 +61,4 @@ input, select { min-width: 0; width: 100%; border: 1px solid #b9c9bd; border-rad
 .equivalence { margin: 8px 0 0; padding: 8px; border-left: 3px solid #91bb9c; background: #f7faf4; font-size: .84rem; }
 .equivalence ul { margin: 5px 0 0; padding-left: 18px; color: #526154; }
 .notice { padding: 12px; border-radius: 8px; color: #8a2c18; background: #fff0e9; }
-@media (max-width: 760px) { .dashboard-grid { grid-template-columns: 1fr; } .topbar, .section-heading { display: grid; } .account { justify-content: space-between; } .run code { max-width: 100%; } }
+@media (max-width: 760px) { .dashboard-grid, .mandate-form { grid-template-columns: 1fr; } .topbar, .section-heading { display: grid; } .account { justify-content: space-between; } .run code { max-width: 100%; } }

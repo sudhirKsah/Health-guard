@@ -20,9 +20,12 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     cors_origins: str = "http://localhost:3000"
+    scheduler_enabled: bool = False
+    scheduler_interval_minutes: int = 60
     prava_api_key: str | None = None
     prava_secret_key: str | None = None
     prava_api_base_url: AnyHttpUrl = "https://sandbox.api.prava.space"
+    health_guard_sandbox_settlement_enabled: bool = False
     health_guard_ucp_profile_url: AnyHttpUrl | None = None
 
     @property

@@ -5,8 +5,9 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AgentRunsPanel } from "./components/agent-runs-panel";
 import { AuthPanel } from "./components/auth-panel";
 import { CareSetup } from "./components/care-setup";
+import { MandateControls } from "./components/mandate-controls";
 import { api, formValue } from "./lib/api";
-import type { AgentRun, Dashboard, Session } from "./lib/types";
+import type { AgentRun, Dashboard, MandateSetupSession, Session } from "./lib/types";
 
 const sessionKey = "health-guard-session";
 
@@ -86,6 +87,43 @@ export function HealthGuardApp() {
     finally { setBusy(false); }
   }
 
+  async function scheduleRun(supplyId: string, runAt: Date) {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try {
+      const scheduled = await api<{ run_at: string }>(`/agent-runs/supplies/${supplyId}/schedule`, session.access_token, { method: "POST", body: JSON.stringify({ run_at: runAt.toISOString() }) });
+      setNotice(`Agent evaluation scheduled for ${new Date(scheduled.run_at).toLocaleString()}.`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not schedule the agent"); }
+    finally { setBusy(false); }
+  }
+
+  async function createMandate(authorizationId: string, body: object): Promise<MandateSetupSession> {
+    if (!session) throw new Error("Please sign in again");
+    setBusy(true); setNotice("");
+    try {
+      const result = await api<MandateSetupSession>(`/mandates/${authorizationId}/setup-session`, session.access_token, { method: "POST", body: JSON.stringify(body) });
+      await refresh(session);
+      return result;
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not create the Prava approval session"); throw error; }
+    finally { setBusy(false); }
+  }
+
+  async function syncMandate(authorizationId: string) {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try { await api(`/mandates/${authorizationId}/sync`, session.access_token, { method: "POST" }); await refresh(session); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Could not sync Prava mandate status"); }
+    finally { setBusy(false); }
+  }
+
+  async function mandateAction(authorizationId: string, action: "pause" | "resume" | "cancel") {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try { await api(`/mandates/${authorizationId}/${action}`, session.access_token, { method: "POST", body: JSON.stringify({ confirmed: true }) }); await refresh(session); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Could not change the Prava mandate"); }
+    finally { setBusy(false); }
+  }
+
   async function signOut() {
     if (session) await api<void>("/auth/logout", session.access_token, { method: "POST" }).catch(() => undefined);
     window.sessionStorage.removeItem(sessionKey); setSession(null); setDashboard(null); setRuns([]);
@@ -94,5 +132,5 @@ export function HealthGuardApp() {
   if (!session) return <AuthPanel mode={mode} busy={busy} notice={notice} onModeChange={setMode} onSubmit={submitAuth} />;
   if (!dashboard) return <main className="auth-shell"><p className="muted">Loading your private care setup…</p>{notice && <p className="notice">{notice}</p>}</main>;
 
-  return <main className="dashboard-shell"><header className="topbar"><div><p className="eyebrow">Health Guard</p><h1>Your care setup</h1></div><div className="account"><span>{session.user.email}</span><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></header><p className="intro">The agent only observes declared inventory and exact product approvals. Until live UCP discovery is connected, it will safely wait or block—never invent an offer or attempt a payment.</p>{notice && <p className="notice" role="status">{notice}</p>}<AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} /><CareSetup dashboard={dashboard} busy={busy} onCreate={createSetup} onToggle={toggle} /></main>;
+  return <main className="dashboard-shell"><header className="topbar"><div><p className="eyebrow">Health Guard</p><h1>Your care setup</h1></div><div className="account"><span>{session.user.email}</span><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></header><p className="intro">The Replenishment Agent works only from declared inventory, exact product approvals, and active merchant mandates. It never invents an offer, bypasses a cap, or sees payment credentials.</p>{notice && <p className="notice" role="status">{notice}</p>}<AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} onSchedule={scheduleRun} /><CareSetup dashboard={dashboard} busy={busy} onCreate={createSetup} onToggle={toggle} /><MandateControls authorizations={dashboard.merchant_authorizations} busy={busy} onSetup={createMandate} onSync={syncMandate} onAction={mandateAction} /></main>;
 }

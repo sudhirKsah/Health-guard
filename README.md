@@ -9,7 +9,7 @@ Health Guard is a bounded replenishment agent for recurring OTC health supplies.
 3. Install frontend dependencies: `npm install`.
 4. Create and activate a Python environment, then install the backend: `python3 -m venv .venv && . .venv/bin/activate && pip install -e 'apps/api[dev]'`.
 5. Apply migrations: `cd apps/api && alembic upgrade head`.
-6. Start the API: `uvicorn app.main:app --app-dir apps/api --reload`.
+6. Start the API: `npm run dev:api`.
 7. Start the web app: `npm run dev:web`.
 
 ## Service checks
@@ -48,14 +48,35 @@ single file checked into the backend source tree.
 - The real catalog adapter intentionally arrives in Phase 4. When an enabled supply reaches its safety buffer,
   the agent records a `blocked` trace rather than inventing catalog results, quotes, or a transaction.
 
-## Phase 4 UCP readiness
+## Phase 4 UCP readiness and live discovery
 
 - `GET /api/v1/integrations/ucp/readiness` reports whether direct Shopify UCP calls are safe to make.
-- Configure `HEALTH_GUARD_UCP_PROFILE_URL` only with Health Guard's own deployed HTTPS
-  `/.well-known/ucp` URL. The backend refuses to use a public/shared test profile.
+- `HEALTH_GUARD_UCP_PROFILE_URL` is set to Health Guard's own deployed HTTPS profile. Himalaya has
+  successfully negotiated catalog search, lookup, and product read through that profile.
 - Safe catalog and quote fields will persist in `offer_snapshots` (merchant/product/variant identity,
   availability, currency, price, ETA, quote ID, and expiry). Payment credentials and raw addresses are never
   part of this record.
+- A controlled unpaid quote identified that a delivery destination is required before a delivery estimate can
+  be trusted. The agent therefore records a safe blocked result instead of choosing or paying for an offer
+  with an invented ETA.
+
+## Phase 5 Prava mandates
+
+- `POST /api/v1/mandates/{merchant_authorization_id}/setup-session` creates a merchant-scoped,
+  authorize-only Prava mandate session. Its short-lived hosted approval URL is returned only to the signed-in
+  browser; the backend stores safe configuration/state but never the URL, session token, card details, or
+  credentials.
+- `POST /api/v1/mandates/{merchant_authorization_id}/sync` lists standing mandates for the opaque Health
+  Guard user reference and records the mandate ID, status, cap, frequency, expiry, cycle balance, and sync
+  time.
+- Owner-confirmed `pause`, `resume`, and `cancel` endpoints call Prava's lifecycle APIs and append a safe
+  `mandate_events` record. The deterministic agent rejects a merchant when its mandate is not active,
+  expired, over its cap, or has insufficient remaining cycle balance.
+- The live sandbox currently rejects the documented optional `mandate_setup.valid_until` field. Health Guard
+  therefore omits it from the Prava request, records Prava's own validity horizon on sync, and separately
+  enforces the owner's selected **Health Guard stops after** time before the agent can initiate any charge.
+- Start the local API and web app, create a merchant authorization, choose a cap/frequency in **Prava mandate
+  controls**, open the Prava approval page, complete the passkey step, and then select **Sync Prava status**.
 
 ## Security boundary
 

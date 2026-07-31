@@ -9,6 +9,7 @@ description = "Health Guard API and real commerce integration boundary"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14",
+  "apscheduler>=3.11,<4",
   "fastapi>=0.115",
   "httpx>=0.28",
   "psycopg[binary]>=3.2",
