@@ -12,6 +12,7 @@ from app.agent.policy import POLICY_VERSION, ApprovedVariantPolicy, OfferCandida
 from app.agent.sandbox_settlement import SandboxSettlementExecutor
 from app.agent.state import AgentState, validate_transition
 from app.agent.tools import CatalogSearchTool, ConfiguredVariant, InventoryTool
+from app.integrations.openai_brain import OpenAIBrain
 from app.models import (
     AgentRun,
     AgentStep,
@@ -29,10 +30,18 @@ from app.models import (
 class ReplenishmentAgent:
     """A bounded agent that records evidence and never receives payment capability in Phase 3."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        brain: OpenAIBrain | None = None,
+        explicit_sandbox_test: bool = False,
+    ) -> None:
         self.db = db
         self.inventory_tool = InventoryTool()
         self.catalog_search_tool = CatalogSearchTool()
+        self.brain = brain or OpenAIBrain()
+        self.explicit_sandbox_test = explicit_sandbox_test
 
     def start(
         self, *, user: User, supply: Supply, trigger_id: str | None = None
@@ -163,7 +172,9 @@ class ReplenishmentAgent:
         self.db.flush()
         self._transition(run, AgentState.DECIDE)
         sandbox_executor = SandboxSettlementExecutor(self.db)
-        sandbox_settlement = sandbox_executor.enabled()
+        sandbox_settlement = sandbox_executor.enabled(
+            explicit_test=self.explicit_sandbox_test
+        )
         policy = choose_offer(
             offers=[
                 OfferCandidate(
@@ -235,6 +246,7 @@ class ReplenishmentAgent:
                     and offer.merchant_variant_id == policy.selected.merchant_variant_id
                 ),
                 product_id=policy.selected.merchant_product_id,
+                explicit_test=self.explicit_sandbox_test,
             )
             self._record_step(
                 run,
@@ -341,6 +353,15 @@ class ReplenishmentAgent:
         explanation: str,
     ) -> tuple[AgentRun, bool]:
         self._transition(run, state)
+        explanation = self.brain.explain_replenishment_decision(
+            facts={
+                "outcome": outcome,
+                "final_state": state.value,
+                "days_until_stockout": str(run.days_until_stockout),
+                "deterministic_explanation": explanation,
+            },
+            fallback=explanation,
+        )
         run.status = status
         run.outcome = outcome
         run.explanation = explanation
@@ -353,7 +374,7 @@ class ReplenishmentAgent:
             else "info"
         )
         title = {
-            "sandbox_settled": "Sandbox payment approved",
+            "sandbox_settled": "Payment approved",
             "blocked": "Reorder needs attention",
             "wait": "Reorder check completed",
         }.get(outcome, "Agent evaluation completed")
@@ -386,6 +407,10 @@ def owned_supply_for_agent(db: Session, *, owner_id: UUID, supply_id: UUID) -> S
     return db.scalar(
         select(Supply)
         .join(Supply.beneficiary)
-        .where(Supply.id == supply_id, Beneficiary.owner_id == owner_id)
+        .where(
+            Supply.id == supply_id,
+            Beneficiary.owner_id == owner_id,
+            Supply.deleted_at.is_(None),
+        )
         .options(selectinload(Supply.beneficiary))
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -77,6 +78,10 @@ class SupplyCreate(BaseModel):
     daily_consumption: Decimal = Field(gt=0, max_digits=12, decimal_places=3)
     quantity_on_hand: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
     safety_buffer_quantity: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
+    product_requirements: str | None = Field(default=None, min_length=2, max_length=1000)
+    preferred_pack_quantity: Decimal | None = Field(
+        default=None, gt=0, max_digits=12, decimal_places=3
+    )
 
 
 class SupplyUpdate(BaseModel):
@@ -88,6 +93,10 @@ class SupplyUpdate(BaseModel):
         default=None, ge=0, max_digits=12, decimal_places=3
     )
     is_enabled: bool | None = None
+    product_requirements: str | None = Field(default=None, min_length=2, max_length=1000)
+    preferred_pack_quantity: Decimal | None = Field(
+        default=None, gt=0, max_digits=12, decimal_places=3
+    )
 
 
 class SupplyOut(ApiModel):
@@ -99,6 +108,15 @@ class SupplyOut(ApiModel):
     quantity_on_hand: Decimal
     safety_buffer_quantity: Decimal
     is_enabled: bool
+    product_requirements: str | None
+    preferred_pack_quantity: Decimal | None
+    setup_status: str
+    setup_message: str | None
+    agent_summary: str | None
+    configured_at: datetime | None
+    inventory_observed_at: datetime
+    next_order_at: datetime
+    order_due: bool
 
 
 class MerchantAuthorizationCreate(BaseModel):
@@ -135,7 +153,7 @@ class MandateSetupRequest(BaseModel):
     approved_amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     currency: str = Field(default="INR", pattern="^[A-Z]{3}$")
     recurring_frequency: str = Field(default="monthly", pattern="^(weekly|monthly|yearly)$")
-    max_charges: int = Field(default=12, ge=1, le=104)
+    max_charges: int | None = Field(default=None, ge=1, le=104)
     valid_until: datetime
 
 
@@ -207,8 +225,27 @@ class SetupDashboard(BaseModel):
     merchant_authorizations: list[MerchantAuthorizationOut]
 
 
+class ProductSuggestionOut(BaseModel):
+    merchant_key: str
+    merchant_name: str
+    product_id: str
+    variant_id: str
+    product_title: str
+    variant_title: str | None
+    pack_quantity: Decimal
+    pack_unit: str
+    available: bool
+    unit_price: Decimal
+    currency: str
+
+
 class AgentRunCreate(BaseModel):
     trigger_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class PaymentTestRequest(BaseModel):
+    confirmed: Literal[True]
+    trigger_id: str = Field(pattern=r"^payment-test:[A-Za-z0-9-]+$", max_length=128)
 
 
 class AgentRunScheduleRequest(BaseModel):
@@ -295,6 +332,15 @@ class AgentRunStartOut(BaseModel):
     reused: bool
 
 
+class SupplyAutomationTimingOut(BaseModel):
+    supply_id: UUID
+    scheduler_enabled: bool
+    interval_minutes: int
+    reorder_threshold_at: datetime
+    next_automatic_check_at: datetime | None
+    state: str
+
+
 class LedgerEventOut(ApiModel):
     id: UUID
     event_type: str
@@ -307,3 +353,16 @@ class LedgerEventOut(ApiModel):
     metadata_safe: dict[str, object]
     read_at: datetime | None
     created_at: datetime
+
+
+class TransactionActivityOut(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    beneficiary_name: str
+    supply_name: str
+    merchant_name: str
+    amount: Decimal
+    currency: str
+    status: str
+    title: str
+    detail: str

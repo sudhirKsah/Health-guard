@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -39,16 +40,29 @@ class InventoryTool:
     name = "get_supply_status"
 
     def run(self, supply: Supply) -> tuple[StockProjection, ToolResult]:
+        now = datetime.now(UTC)
+        observed_at = supply.inventory_observed_at
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=UTC)
+        elapsed_days = Decimal(str(max(0.0, (now - observed_at).total_seconds()))) / Decimal(
+            "86400"
+        )
+        estimated_quantity = max(
+            Decimal("0"), supply.quantity_on_hand - supply.daily_consumption * elapsed_days
+        )
         projection = project_stock(
-            quantity_on_hand=supply.quantity_on_hand,
+            quantity_on_hand=estimated_quantity,
             daily_consumption=supply.daily_consumption,
             safety_buffer_quantity=supply.safety_buffer_quantity,
+            observed_at=now,
         )
         return projection, ToolResult(
             status="success",
             summary={
                 "supply_id": str(supply.id),
                 "quantity_on_hand": str(supply.quantity_on_hand),
+                "estimated_quantity_now": str(estimated_quantity.quantize(Decimal('0.001'))),
+                "inventory_observed_at": observed_at.isoformat(),
                 "unit": supply.unit,
                 "daily_consumption": str(supply.daily_consumption),
                 "safety_buffer_quantity": str(supply.safety_buffer_quantity),

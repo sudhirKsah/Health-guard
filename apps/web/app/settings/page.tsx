@@ -1,2 +1,2 @@
-import { WorkspacePage } from "../workspace-page";
-export default function Page() { return <WorkspacePage page="settings" />; }
+import { redirect } from "next/navigation";
+export default function Page() { redirect("/dashboard"); }

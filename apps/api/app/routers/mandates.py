@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import ceil
 from typing import Literal
 from uuid import UUID
 
@@ -29,6 +30,11 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/mandates", tags=["Prava mandates"])
+
+
+def default_max_charges(*, frequency: str, starts_at: datetime, ends_at: datetime) -> int:
+    period_days = {"weekly": 7, "monthly": 30.4375, "yearly": 365.25}[frequency]
+    return min(104, max(1, ceil((ends_at - starts_at).total_seconds() / 86400 / period_days)))
 
 
 def external_user_id(user: User) -> str:
@@ -160,6 +166,11 @@ def create_setup_session(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Mandate expiry exceeds Prava's permitted horizon for this frequency",
         )
+    max_charges = payload.max_charges or default_max_charges(
+        frequency=payload.recurring_frequency,
+        starts_at=now,
+        ends_at=valid_until,
+    )
     merchant_name, _, merchant_url = MERCHANTS[authorization.merchant_key]
     try:
         result = PravaClient().create_mandate_setup(
@@ -170,7 +181,7 @@ def create_setup_session(
             approved_amount=payload.approved_amount,
             currency=payload.currency,
             recurring_frequency=payload.recurring_frequency,
-            max_charges=payload.max_charges,
+            max_charges=max_charges,
             valid_until=valid_until,
         )
     except (PravaApiError, PravaConfigurationError, PravaUnavailableError) as error:
@@ -189,7 +200,7 @@ def create_setup_session(
     authorization.mandate_remaining_amount = None
     authorization.mandate_currency = payload.currency
     authorization.mandate_frequency = payload.recurring_frequency
-    authorization.mandate_max_charges = payload.max_charges
+    authorization.mandate_max_charges = max_charges
     authorization.health_guard_stop_after = valid_until
     authorization.mandate_renews_at = None
     authorization.mandate_synced_at = now
@@ -203,7 +214,7 @@ def create_setup_session(
             "approved_amount": str(payload.approved_amount),
             "currency": payload.currency,
             "frequency": payload.recurring_frequency,
-            "max_charges": payload.max_charges,
+            "max_charges": max_charges,
         },
     )
     db.commit()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from uuid import UUID, uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -10,6 +11,19 @@ from sqlalchemy.orm import selectinload
 from app.agent.runtime import ReplenishmentAgent
 from app.database import get_session_factory
 from app.models import Beneficiary, Supply
+
+
+def interval_on_or_after(
+    *, first_run: datetime, threshold_at: datetime, interval_minutes: int
+) -> datetime:
+    """Find the first interval boundary at or after a threshold."""
+    normalized_first = first_run.astimezone(UTC)
+    normalized_threshold = threshold_at.astimezone(UTC)
+    if normalized_threshold <= normalized_first:
+        return normalized_first
+    interval = timedelta(minutes=interval_minutes)
+    intervals = ceil((normalized_threshold - normalized_first) / interval)
+    return normalized_first + (interval * intervals)
 
 
 class ReplenishmentScheduler:
@@ -38,6 +52,27 @@ class ReplenishmentScheduler:
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
 
+    @property
+    def interval_minutes(self) -> int:
+        return self._interval_minutes
+
+    @property
+    def next_recurring_evaluation_at(self) -> datetime | None:
+        """Return the next real recurring worker run, if recurring work is enabled."""
+        job = self._scheduler.get_job("replenishment-evaluations")
+        return job.next_run_time.astimezone(UTC) if job and job.next_run_time else None
+
+    def next_evaluation_on_or_after(self, threshold_at: datetime) -> datetime | None:
+        """Return the first recurring worker run at or after an inventory threshold."""
+        next_run = self.next_recurring_evaluation_at
+        if next_run is None:
+            return None
+        return interval_on_or_after(
+            first_run=next_run,
+            threshold_at=threshold_at,
+            interval_minutes=self._interval_minutes,
+        )
+
     def run_due_evaluations(self) -> None:
         """Evaluate each enabled, active supply once per interval bucket.
 
@@ -50,7 +85,11 @@ class ReplenishmentScheduler:
                 db.scalars(
                     select(Supply)
                     .join(Supply.beneficiary)
-                    .where(Supply.is_enabled.is_(True), Beneficiary.is_active.is_(True))
+                    .where(
+                        Supply.is_enabled.is_(True),
+                        Supply.deleted_at.is_(None),
+                        Beneficiary.is_active.is_(True),
+                    )
                     .options(selectinload(Supply.beneficiary).selectinload(Beneficiary.owner))
                 )
             )
@@ -86,7 +125,11 @@ class ReplenishmentScheduler:
             supply = db.scalar(
                 select(Supply)
                 .join(Supply.beneficiary)
-                .where(Supply.id == supply_id, Beneficiary.owner_id == owner_id)
+                .where(
+                    Supply.id == supply_id,
+                    Beneficiary.owner_id == owner_id,
+                    Supply.deleted_at.is_(None),
+                )
                 .options(selectinload(Supply.beneficiary).selectinload(Beneficiary.owner))
             )
             if supply is None:

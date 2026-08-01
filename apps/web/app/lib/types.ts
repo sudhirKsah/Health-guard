@@ -21,6 +21,15 @@ export type Supply = {
   quantity_on_hand: string;
   safety_buffer_quantity: string;
   is_enabled: boolean;
+  product_requirements: string | null;
+  preferred_pack_quantity: string | null;
+  setup_status: "waiting_for_merchant" | "discovering" | "ready" | "needs_attention" | string;
+  setup_message: string | null;
+  agent_summary: string | null;
+  configured_at: string | null;
+  inventory_observed_at: string;
+  next_order_at: string;
+  order_due: boolean;
   equivalence_sets: EquivalenceSet[];
 };
 
@@ -53,6 +62,29 @@ export type MerchantAuthorization = {
 };
 
 export type Dashboard = { beneficiaries: Beneficiary[]; merchant_authorizations: MerchantAuthorization[] };
+
+export type SupplyAutomationTiming = {
+  supply_id: string;
+  scheduler_enabled: boolean;
+  interval_minutes: number;
+  reorder_threshold_at: string;
+  next_automatic_check_at: string | null;
+  state: "scheduled" | "paused" | "setup_required" | "scheduler_off" | string;
+};
+
+export type ProductSuggestion = {
+  merchant_key: string;
+  merchant_name: string;
+  product_id: string;
+  variant_id: string;
+  product_title: string;
+  variant_title: string | null;
+  pack_quantity: string;
+  pack_unit: string;
+  available: boolean;
+  unit_price: string;
+  currency: string;
+};
 
 export type MandateSetupSession = {
   merchant_authorization: MerchantAuthorization;
@@ -109,3 +141,16 @@ export type AgentRun = {
 };
 
 export type LedgerEvent = { id: string; event_type: string; title: string; detail: string; severity: "info" | "success" | "warning"; agent_run_id: string | null; supply_id: string | null; purchase_order_id: string | null; metadata_safe: Record<string, unknown>; read_at: string | null; created_at: string };
+
+export type TransactionActivity = {
+  id: string;
+  occurred_at: string;
+  beneficiary_name: string;
+  supply_name: string;
+  merchant_name: string;
+  amount: string;
+  currency: string;
+  status: "approved" | "declined" | "pending";
+  title: string;
+  detail: string;
+};

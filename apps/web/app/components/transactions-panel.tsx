@@ -1,0 +1,9 @@
+"use client";
+
+import type { TransactionActivity } from "../lib/types";
+
+export function TransactionsPanel({ transactions }: { transactions: TransactionActivity[] }) {
+  const approved = transactions.filter((item) => item.status === "approved").length;
+  const declined = transactions.filter((item) => item.status === "declined").length;
+  return <div className="stack page-section"><section className="payment-summary"><article><span className="summary-dot approved" /><div><small>Approved</small><strong>{approved}</strong></div></article><article><span className="summary-dot declined" /><div><small>Declined</small><strong>{declined}</strong></div></article><article><span className="summary-dot pending" /><div><small>Processing</small><strong>{transactions.length - approved - declined}</strong></div></article></section><section className="card stack"><div className="plain-heading"><h2>Payment transactions</h2><p>Every attempted mandate payment appears here with its final status. Secure payment credentials are never displayed or stored.</p></div>{!transactions.length ? <p className="empty-state">No payment transactions yet.</p> : <div className="transaction-list">{transactions.map((transaction) => <article className="transaction" key={transaction.id}><div className={`transaction-icon ${transaction.status}`} aria-hidden>{transaction.status === "approved" ? "✓" : transaction.status === "declined" ? "×" : "…"}</div><div><header><strong>{transaction.supply_name}</strong><span className={`status-pill ${transaction.status}`}>{transaction.status}</span></header><p>{transaction.detail}</p><small>{transaction.beneficiary_name} · {transaction.merchant_name} · {new Date(transaction.occurred_at).toLocaleString()}</small></div><b className="transaction-amount">{transaction.currency} {Number(transaction.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></article>)}</div>}</section></div>;
+}

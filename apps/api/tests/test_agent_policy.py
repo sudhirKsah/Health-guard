@@ -3,9 +3,10 @@ from decimal import Decimal
 
 from app.agent.policy import ApprovedVariantPolicy, OfferCandidate, choose_offer, project_stock
 from app.agent.state import AgentState, validate_transition
-from app.agent.tools import CatalogSearchTool
+from app.agent.tools import CatalogSearchTool, InventoryTool
 from app.config import Settings
 from app.integrations.ucp import UcpAdapter
+from app.models import Supply
 
 
 def approval(*, enabled: bool = True, rank: int = 1, **overrides: object) -> ApprovedVariantPolicy:
@@ -48,6 +49,22 @@ def test_stock_projection_reorders_at_safety_buffer() -> None:
     assert projection.days_until_stockout == Decimal("4")
     assert projection.days_until_safety_buffer == Decimal("0")
     assert projection.reorder_required is True
+
+
+def test_inventory_tool_accounts_for_consumption_since_the_last_observation() -> None:
+    supply = Supply(
+        name="Test tablets",
+        unit="tablet",
+        daily_consumption=Decimal("2"),
+        quantity_on_hand=Decimal("10"),
+        safety_buffer_quantity=Decimal("8"),
+        inventory_observed_at=datetime.now(UTC) - timedelta(days=1),
+    )
+
+    projection, result = InventoryTool().run(supply)
+
+    assert projection.reorder_required is True
+    assert Decimal(str(result.summary["estimated_quantity_now"])) <= Decimal("8")
 
 
 def test_policy_rejects_late_offer_and_selects_eligible_exact_variant() -> None:

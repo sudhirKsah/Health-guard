@@ -1,15 +1,26 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.agent.product_approval import (
+    AUTO_EQUIVALENCE_SET_NAME,
+    auto_configure_owner_supplies_background,
+    auto_configure_supply_background,
+    catalog_pack,
+    significant_terms,
+)
 from app.auth import get_current_user
 from app.database import get_db_session
+from app.integrations.ucp import UcpAdapter, UcpConfigurationError, UcpMerchantError
 from app.models import (
     ApprovedVariant,
     Beneficiary,
+    LedgerEvent,
     MerchantAuthorization,
     ProductEquivalenceSet,
     Supply,
@@ -27,8 +38,10 @@ from app.schemas import (
     MerchantAuthorizationCreate,
     MerchantAuthorizationOut,
     MerchantAuthorizationUpdate,
+    ProductSuggestionOut,
     SetupDashboard,
     SupplyCreate,
+    SupplyDashboard,
     SupplyOut,
     SupplyUpdate,
 )
@@ -57,7 +70,11 @@ def owned_supply(db: Session, owner_id: UUID, supply_id: UUID) -> Supply:
     supply = db.scalar(
         select(Supply)
         .join(Supply.beneficiary)
-        .where(Supply.id == supply_id, Beneficiary.owner_id == owner_id)
+        .where(
+            Supply.id == supply_id,
+            Beneficiary.owner_id == owner_id,
+            Supply.deleted_at.is_(None),
+        )
     )
     if supply is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supply not found")
@@ -71,7 +88,11 @@ def owned_equivalence_set(
         select(ProductEquivalenceSet)
         .join(ProductEquivalenceSet.supply)
         .join(Supply.beneficiary)
-        .where(ProductEquivalenceSet.id == equivalence_set_id, Beneficiary.owner_id == owner_id)
+        .where(
+            ProductEquivalenceSet.id == equivalence_set_id,
+            Beneficiary.owner_id == owner_id,
+            Supply.deleted_at.is_(None),
+        )
     )
     if equivalence_set is None:
         raise HTTPException(
@@ -115,6 +136,113 @@ def supply_has_eligible_variant(db: Session, owner_id: UUID, supply_id: UUID) ->
     return variant_id is not None
 
 
+def suggestion_matches(*, query: str, catalog_evidence: str, merchant_label: str) -> bool:
+    """Allow useful type-ahead prefixes without weakening final product approval rules."""
+    required_terms = significant_terms(query) - significant_terms(merchant_label)
+    evidence_terms = significant_terms(catalog_evidence)
+    return bool(required_terms) and all(
+        any(
+            evidence == required
+            or (len(required) >= 3 and evidence.startswith(required))
+            for evidence in evidence_terms
+        )
+        for required in required_terms
+    )
+
+
+@router.get("/product-suggestions", response_model=list[ProductSuggestionOut])
+def product_suggestions(
+    query: str = Query(min_length=3, max_length=160),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> list[ProductSuggestionOut]:
+    """Search the user's enabled merchant catalogs for human-readable type-ahead results."""
+    authorizations = list(
+        db.execute(
+            select(
+                MerchantAuthorization.merchant_key,
+                MerchantAuthorization.merchant_name,
+                MerchantAuthorization.preference_rank,
+            )
+            .where(
+                MerchantAuthorization.owner_id == user.id,
+                MerchantAuthorization.is_enabled.is_(True),
+            )
+            .order_by(MerchantAuthorization.preference_rank)
+        ).all()
+    )
+    if not authorizations:
+        return []
+
+    adapter = UcpAdapter()
+
+    def search_merchant(
+        merchant_key: str, merchant_name: str, preference_rank: int
+    ) -> list[tuple[int, ProductSuggestionOut]]:
+        variants = adapter.search(merchant_key=merchant_key, query=query.strip())
+        matches: list[tuple[int, ProductSuggestionOut]] = []
+        merchant_label = f"{merchant_key} {merchant_name}"
+        for variant in variants:
+            if not variant.available or not suggestion_matches(
+                query=query,
+                catalog_evidence=variant.catalog_evidence,
+                merchant_label=merchant_label,
+            ):
+                continue
+            pack = catalog_pack(variant.catalog_evidence)
+            if pack is None:
+                continue
+            matches.append(
+                (
+                    preference_rank,
+                    ProductSuggestionOut(
+                        merchant_key=merchant_key,
+                        merchant_name=merchant_name,
+                        product_id=variant.product_id,
+                        variant_id=variant.variant_id,
+                        product_title=variant.product_title,
+                        variant_title=variant.variant_title,
+                        pack_quantity=pack[0],
+                        pack_unit=pack[1],
+                        available=variant.available,
+                        unit_price=variant.unit_price,
+                        currency=variant.currency,
+                    ),
+                )
+            )
+        return matches
+
+    ranked: list[tuple[int, ProductSuggestionOut]] = []
+    with ThreadPoolExecutor(max_workers=min(3, len(authorizations))) as executor:
+        futures = [executor.submit(search_merchant, *authorization) for authorization in authorizations]
+        for future in as_completed(futures):
+            try:
+                ranked.extend(future.result())
+            except (UcpConfigurationError, UcpMerchantError):
+                continue
+
+    ranked.sort(
+        key=lambda item: (
+            item[0],
+            item[1].unit_price / item[1].pack_quantity,
+            item[1].unit_price,
+            item[1].product_title.casefold(),
+            item[1].variant_id,
+        )
+    )
+    seen: set[tuple[str, str, str]] = set()
+    suggestions: list[ProductSuggestionOut] = []
+    for _, suggestion in ranked:
+        identity = (suggestion.merchant_key, suggestion.product_id, suggestion.variant_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        suggestions.append(suggestion)
+        if len(suggestions) == 8:
+            break
+    return suggestions
+
+
 @router.get("/dashboard", response_model=SetupDashboard)
 def dashboard(
     user: User = Depends(get_current_user), db: Session = Depends(get_db_session)
@@ -139,7 +267,20 @@ def dashboard(
         )
     )
     return SetupDashboard(
-        beneficiaries=[BeneficiaryDashboard.model_validate(item) for item in beneficiaries],
+        beneficiaries=[
+            BeneficiaryDashboard(
+                id=item.id,
+                name=item.name,
+                relationship_label=item.relationship_label,
+                is_active=item.is_active,
+                supplies=[
+                    SupplyDashboard.model_validate(supply)
+                    for supply in item.supplies
+                    if supply.deleted_at is None
+                ],
+            )
+            for item in beneficiaries
+        ],
         merchant_authorizations=[
             MerchantAuthorizationOut.model_validate(item) for item in authorizations
         ],
@@ -186,14 +327,22 @@ def update_beneficiary(
 def create_supply(
     beneficiary_id: UUID,
     payload: SupplyCreate,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> SupplyOut:
     owned_beneficiary(db, user.id, beneficiary_id)
-    supply = Supply(beneficiary_id=beneficiary_id, **payload.model_dump())
+    values = payload.model_dump()
+    values["name"] = payload.name.strip()
+    values["unit"] = payload.unit.strip()
+    values["product_requirements"] = (
+        payload.product_requirements.strip() if payload.product_requirements else None
+    )
+    supply = Supply(beneficiary_id=beneficiary_id, **values)
     db.add(supply)
     db.commit()
     db.refresh(supply)
+    background_tasks.add_task(auto_configure_supply_background, user.id, supply.id)
     return SupplyOut.model_validate(supply)
 
 
@@ -201,23 +350,82 @@ def create_supply(
 def update_supply(
     supply_id: UUID,
     payload: SupplyUpdate,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> SupplyOut:
     supply = owned_supply(db, user.id, supply_id)
     updates = payload.model_dump(exclude_unset=True)
-    if updates.get("is_enabled") is True and not supply_has_eligible_variant(
-        db, user.id, supply.id
+    if updates.get("is_enabled") is True and (
+        supply.setup_status != "ready"
+        or not supply_has_eligible_variant(db, user.id, supply.id)
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Approve at least one exact variant on an enabled merchant before enabling a supply",
+            detail="Health Guard must verify an exact merchant product before automatic ordering can be enabled",
         )
+    matching_fields = {"name", "unit", "product_requirements", "preferred_pack_quantity"}
+    needs_reconfiguration = bool(matching_fields.intersection(updates))
+    if needs_reconfiguration:
+        next_requirements = updates.get("product_requirements", supply.product_requirements)
+        has_specific_preference = bool(
+            isinstance(next_requirements, str) and next_requirements.strip()
+        )
+        auto_set = db.scalar(
+            select(ProductEquivalenceSet)
+            .where(
+                ProductEquivalenceSet.supply_id == supply.id,
+                ProductEquivalenceSet.name == AUTO_EQUIVALENCE_SET_NAME,
+            )
+            .options(selectinload(ProductEquivalenceSet.approved_variants))
+        )
+        if auto_set is not None:
+            for variant in list(auto_set.approved_variants):
+                db.delete(variant)
+        supply.setup_status = "discovering"
+        supply.setup_message = (
+            "Rechecking your specific product after the update…"
+            if has_specific_preference
+            else "Choosing a matching product after the update…"
+        )
+        supply.agent_summary = None
+        supply.configured_at = None
+        supply.is_enabled = False
+    if {"quantity_on_hand", "daily_consumption", "safety_buffer_quantity"}.intersection(
+        updates
+    ):
+        supply.inventory_observed_at = datetime.now(UTC)
     for field, value in updates.items():
         setattr(supply, field, value.strip() if isinstance(value, str) else value)
     db.commit()
     db.refresh(supply)
+    if needs_reconfiguration:
+        background_tasks.add_task(auto_configure_supply_background, user.id, supply.id)
     return SupplyOut.model_validate(supply)
+
+
+@router.delete("/supplies/{supply_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_supply(
+    supply_id: UUID,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> Response:
+    supply = owned_supply(db, user.id, supply_id)
+    supply.deleted_at = datetime.now(UTC)
+    supply.is_enabled = False
+    db.add(
+        LedgerEvent(
+            owner_id=user.id,
+            event_type="supply_deleted",
+            title="Recurring supply removed",
+            detail=f"{supply.name} was removed from automatic ordering.",
+            severity="info",
+            supply_id=supply.id,
+            metadata_safe={"supply_name": supply.name},
+        )
+    )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -227,6 +435,7 @@ def update_supply(
 )
 def create_merchant_authorization(
     payload: MerchantAuthorizationCreate,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> MerchantAuthorizationOut:
@@ -247,6 +456,7 @@ def create_merchant_authorization(
             status_code=status.HTTP_409_CONFLICT, detail="This merchant is already approved"
         ) from error
     db.refresh(authorization)
+    background_tasks.add_task(auto_configure_owner_supplies_background, user.id)
     return MerchantAuthorizationOut.model_validate(authorization)
 
 
@@ -256,6 +466,7 @@ def create_merchant_authorization(
 def update_merchant_authorization(
     merchant_authorization_id: UUID,
     payload: MerchantAuthorizationUpdate,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> MerchantAuthorizationOut:
@@ -264,7 +475,34 @@ def update_merchant_authorization(
         setattr(authorization, field, value)
     db.commit()
     db.refresh(authorization)
+    if payload.is_enabled is True:
+        background_tasks.add_task(auto_configure_owner_supplies_background, user.id)
     return MerchantAuthorizationOut.model_validate(authorization)
+
+
+@router.post(
+    "/supplies/{supply_id}/auto-configure",
+    response_model=SupplyOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_automatic_product_setup(
+    supply_id: UUID,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> SupplyOut:
+    supply = owned_supply(db, user.id, supply_id)
+    supply.setup_status = "discovering"
+    supply.setup_message = (
+        "Checking approved merchants for your specific product…"
+        if supply.product_requirements
+        else "Checking approved merchants for a matching product…"
+    )
+    supply.is_enabled = False
+    db.commit()
+    db.refresh(supply)
+    background_tasks.add_task(auto_configure_supply_background, user.id, supply.id)
+    return SupplyOut.model_validate(supply)
 
 
 @router.post(

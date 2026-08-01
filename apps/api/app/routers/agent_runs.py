@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.agent.runtime import ReplenishmentAgent, owned_supply_for_agent
 from app.auth import get_current_user
 from app.database import get_db_session
-from app.models import AgentRun, User
+from app.models import AgentRun, Beneficiary, Supply, User
 from app.scheduler import ReplenishmentScheduler
 from app.schemas import (
     AgentRunCreate,
@@ -15,6 +15,8 @@ from app.schemas import (
     AgentRunScheduleOut,
     AgentRunScheduleRequest,
     AgentRunStartOut,
+    PaymentTestRequest,
+    SupplyAutomationTimingOut,
 )
 
 router = APIRouter(prefix="/agent-runs", tags=["replenishment agent"])
@@ -31,6 +33,58 @@ def owned_run(db: Session, owner_id: UUID, run_id: UUID) -> AgentRun:
     return run
 
 
+@router.get("/automation-timing", response_model=list[SupplyAutomationTimingOut])
+def automation_timing(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> list[SupplyAutomationTimingOut]:
+    """Describe threshold timing separately from the scheduler's actual next check."""
+    scheduler = getattr(request.app.state, "replenishment_scheduler", None)
+    scheduler_available = isinstance(scheduler, ReplenishmentScheduler)
+    scheduler_enabled = bool(
+        scheduler_available and scheduler.next_recurring_evaluation_at is not None
+    )
+    interval_minutes = scheduler.interval_minutes if scheduler_available else 0
+    supplies = list(
+        db.scalars(
+            select(Supply)
+            .join(Supply.beneficiary)
+            .where(
+                Beneficiary.owner_id == user.id,
+                Supply.deleted_at.is_(None),
+            )
+            .order_by(Supply.created_at)
+        )
+    )
+    timings: list[SupplyAutomationTimingOut] = []
+    for supply in supplies:
+        if not supply.is_enabled:
+            state = "paused"
+        elif supply.setup_status != "ready":
+            state = "setup_required"
+        elif not scheduler_enabled:
+            state = "scheduler_off"
+        else:
+            state = "scheduled"
+        next_check = (
+            scheduler.next_evaluation_on_or_after(supply.next_order_at)
+            if state == "scheduled" and scheduler_available
+            else None
+        )
+        timings.append(
+            SupplyAutomationTimingOut(
+                supply_id=supply.id,
+                scheduler_enabled=scheduler_enabled,
+                interval_minutes=interval_minutes,
+                reorder_threshold_at=supply.next_order_at,
+                next_automatic_check_at=next_check,
+                state=state,
+            )
+        )
+    return timings
+
+
 @router.post(
     "/supplies/{supply_id}", response_model=AgentRunStartOut, status_code=status.HTTP_201_CREATED
 )
@@ -45,6 +99,28 @@ def start_run(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supply not found")
     run, reused = ReplenishmentAgent(db).start(
         user=user, supply=supply, trigger_id=payload.trigger_id
+    )
+    return AgentRunStartOut(run=AgentRunOut.model_validate(run), reused=reused)
+
+
+@router.post(
+    "/supplies/{supply_id}/test-payment",
+    response_model=AgentRunStartOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def test_recurring_payment(
+    supply_id: UUID,
+    payload: PaymentTestRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> AgentRunStartOut:
+    supply = owned_supply_for_agent(db, owner_id=user.id, supply_id=supply_id)
+    if supply is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supply not found")
+    run, reused = ReplenishmentAgent(db, explicit_sandbox_test=True).start(
+        user=user,
+        supply=supply,
+        trigger_id=payload.trigger_id,
     )
     return AgentRunStartOut(run=AgentRunOut.model_validate(run), reused=reused)
 

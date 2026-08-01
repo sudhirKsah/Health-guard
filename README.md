@@ -2,6 +2,22 @@
 
 Health Guard is a bounded replenishment agent for recurring OTC health supplies. It uses real merchant UCP catalog data and Prava's trust layer; it never uses fake products, mock payment outcomes, or simulated checkout data.
 
+## Normal user workflow
+
+1. Add a beneficiary (including **Self**).
+2. Describe a recurring supply using the wording on its label and ordinary inventory quantities.
+3. Select trusted merchants.
+4. Create a merchant-specific Prava mandate and complete its one-time passkey approval.
+
+Health Guard's backend then searches live merchant catalogs, asks the configured OpenAI model to
+review only deterministic exact-match candidates, creates internal equivalence/variant approvals,
+and runs the existing deterministic replenishment and REST mandate-charge workflow. Product IDs,
+variant IDs, JSON traces, and payment credentials are not part of the normal user interface.
+
+Authenticated server-sent events keep supply setup, mandates, agent outcomes, and transactions live
+in the browser. `OPENAI_MODEL` selects the model without requiring code changes; the default is
+`gpt-5.6-terra`.
+
 ## Local development
 
 1. Copy the safe placeholders in `.env.example` into the existing root `.env` and add only your real sandbox values.

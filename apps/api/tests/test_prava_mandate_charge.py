@@ -2,6 +2,8 @@ from decimal import Decimal
 
 import pytest
 
+from app.agent.sandbox_settlement import SandboxSettlementExecutor
+from app.config import Settings
 from app.integrations.prava import PravaClient
 
 
@@ -102,3 +104,24 @@ def test_report_mandate_charge_rejects_unknown_status() -> None:
         client.report_mandate_charge(
             mandate_id="mdt_123", transaction_id="txn_123", transaction_status="PENDING"
         )
+
+
+def test_explicit_payment_test_is_allowed_only_against_prava_sandbox() -> None:
+    sandbox = SandboxSettlementExecutor(
+        None,  # type: ignore[arg-type]
+        settings=Settings(
+            prava_api_base_url="https://sandbox.api.prava.space",
+            health_guard_sandbox_settlement_enabled=False,
+        ),
+    )
+    production = SandboxSettlementExecutor(
+        None,  # type: ignore[arg-type]
+        settings=Settings(
+            prava_api_base_url="https://api.prava.space",
+            health_guard_sandbox_settlement_enabled=True,
+        ),
+    )
+
+    assert sandbox.enabled() is False
+    assert sandbox.enabled(explicit_test=True) is True
+    assert production.enabled(explicit_test=True) is False

@@ -32,9 +32,9 @@ class SandboxSettlementExecutor:
         self._settings = settings or get_settings()
         self._prava = prava or PravaClient(self._settings)
 
-    def enabled(self) -> bool:
+    def enabled(self, *, explicit_test: bool = False) -> bool:
         return (
-            self._settings.health_guard_sandbox_settlement_enabled
+            (self._settings.health_guard_sandbox_settlement_enabled or explicit_test)
             and self._settings.prava_api_base_url.host == "sandbox.api.prava.space"
         )
 
@@ -47,8 +47,9 @@ class SandboxSettlementExecutor:
         product_description: str,
         product_id: str,
         quantity: int = 1,
+        explicit_test: bool = False,
     ) -> SandboxSettlementResult:
-        if not self.enabled():
+        if not self.enabled(explicit_test=explicit_test):
             return SandboxSettlementResult("blocked", "sandbox_settlement_not_enabled")
         if not authorization.prava_mandate_id:
             return SandboxSettlementResult("blocked", "mandate_id_missing")

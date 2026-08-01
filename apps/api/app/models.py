@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -110,6 +110,18 @@ class Supply(Timestamped, Base):
     quantity_on_hand: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     safety_buffer_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    product_requirements: Mapped[str | None] = mapped_column(Text)
+    preferred_pack_quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    setup_status: Mapped[str] = mapped_column(
+        String(32), default="waiting_for_merchant", nullable=False
+    )
+    setup_message: Mapped[str | None] = mapped_column(Text)
+    agent_summary: Mapped[str | None] = mapped_column(Text)
+    configured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    inventory_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     beneficiary: Mapped[Beneficiary] = relationship(back_populates="supplies")
     equivalence_sets: Mapped[list[ProductEquivalenceSet]] = relationship(
@@ -118,6 +130,22 @@ class Supply(Timestamped, Base):
     agent_runs: Mapped[list[AgentRun]] = relationship(
         back_populates="supply", cascade="all, delete-orphan"
     )
+
+    @property
+    def next_order_at(self) -> datetime:
+        observed_at = self.inventory_observed_at
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=UTC)
+        quantity_before_buffer = max(
+            Decimal("0"), self.quantity_on_hand - self.safety_buffer_quantity
+        )
+        return observed_at + timedelta(
+            days=float(quantity_before_buffer / self.daily_consumption)
+        )
+
+    @property
+    def order_due(self) -> bool:
+        return self.next_order_at <= datetime.now(UTC)
 
 
 class MerchantAuthorization(Timestamped, Base):
@@ -253,7 +281,7 @@ class AgentRun(Base):
     trigger_id: Mapped[str] = mapped_column(String(128), nullable=False)
     goal: Mapped[str] = mapped_column(String(500), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False)
-    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
     outcome: Mapped[str | None] = mapped_column(String(24))
     explanation: Mapped[str | None] = mapped_column(Text)
     policy_version: Mapped[str] = mapped_column(String(32), nullable=False)

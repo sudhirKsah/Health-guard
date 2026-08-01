@@ -1,7 +1,8 @@
+import re
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -27,6 +28,22 @@ class Settings(BaseSettings):
     prava_api_base_url: AnyHttpUrl = "https://sandbox.api.prava.space"
     health_guard_sandbox_settlement_enabled: bool = False
     health_guard_ucp_profile_url: AnyHttpUrl | None = None
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-5.6-terra"
+    openai_reasoning_effort: str = "medium"
+
+    @field_validator("openai_model", mode="before")
+    @classmethod
+    def normalize_openai_model(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        aliases = {
+            "gpt56sol": "gpt-5.6-sol",
+            "gpt56terra": "gpt-5.6-terra",
+            "gpt56luna": "gpt-5.6-luna",
+        }
+        return aliases.get(re.sub(r"[^a-z0-9]", "", cleaned.casefold()), cleaned)
 
     @property
     def cors_origin_list(self) -> list[str]:

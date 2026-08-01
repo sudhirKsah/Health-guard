@@ -32,6 +32,7 @@ class UcpVariant:
     available: bool
     currency: str
     unit_price: Decimal
+    catalog_evidence: str
 
 
 @dataclass(frozen=True)
@@ -221,9 +222,38 @@ class UcpAdapter:
                     else False,
                     currency=str(price.get("currency", "INR")),
                     unit_price=minor_to_major(price["amount"]),
+                    catalog_evidence=" ".join(
+                        value
+                        for value in (
+                            product_title,
+                            variant.get("title")
+                            if isinstance(variant.get("title"), str)
+                            else None,
+                            *UcpAdapter._catalog_labels(variant),
+                            *UcpAdapter._catalog_labels(product),
+                        )
+                        if value
+                    ),
                 )
             )
         return variants
+
+    @staticmethod
+    def _catalog_labels(item: dict[str, object]) -> list[str]:
+        labels: list[str] = []
+        for option in item.get("options", []):
+            if not isinstance(option, dict):
+                continue
+            label = option.get("label")
+            if isinstance(label, str):
+                labels.append(label)
+            for value in option.get("values", []):
+                if isinstance(value, dict) and isinstance(value.get("label"), str):
+                    labels.append(value["label"])
+        for media in item.get("media", []):
+            if isinstance(media, dict) and isinstance(media.get("alt_text"), str):
+                labels.append(media["alt_text"])
+        return labels
 
 
 def minor_to_major(amount: int) -> Decimal:

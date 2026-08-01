@@ -4,8 +4,10 @@ Version: 0.1.0
 Summary: Health Guard API and real commerce integration boundary
 Requires-Python: >=3.12
 Requires-Dist: alembic>=1.14
+Requires-Dist: apscheduler<4,>=3.11
 Requires-Dist: fastapi>=0.115
 Requires-Dist: httpx>=0.28
+Requires-Dist: openai<3,>=2.0
 Requires-Dist: psycopg[binary]>=3.2
 Requires-Dist: pydantic-settings>=2.7
 Requires-Dist: sqlalchemy>=2.0
