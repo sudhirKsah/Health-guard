@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 MERCHANT_UCP_ENDPOINTS = {
     "himalaya": "https://himalaya-wellness-india.myshopify.com/api/ucp/mcp",
     "oziva": "https://oziva.myshopify.com/api/ucp/mcp",
+    "zandu": "https://zanducare.myshopify.com/api/ucp/mcp",
 }
 
 

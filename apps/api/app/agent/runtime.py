@@ -17,6 +17,7 @@ from app.models import (
     AgentStep,
     ApprovedVariant,
     Beneficiary,
+    LedgerEvent,
     MerchantAuthorization,
     OfferSnapshot,
     ProductEquivalenceSet,
@@ -252,6 +253,20 @@ class ReplenishmentAgent:
             )
             if settlement.status == "sandbox_settled":
                 self._transition(run, AgentState.VERIFY)
+                self._record_step(
+                    run,
+                    stage="verify",
+                    tool_name="verify_prava_sandbox_settlement",
+                    status="success",
+                    input_summary={
+                        "purchase_order_status": "sandbox_settled",
+                    },
+                    output_summary={
+                        "prava_report_status": "APPROVED",
+                        "merchant_order_id": None,
+                        "merchant_fulfillment": "not_available_in_sandbox_settlement",
+                    },
+                )
                 return self._finish(
                     run,
                     state=AgentState.COMPLETE,
@@ -330,6 +345,31 @@ class ReplenishmentAgent:
         run.outcome = outcome
         run.explanation = explanation
         run.completed_at = datetime.now(UTC)
+        severity = (
+            "success"
+            if outcome == "sandbox_settled"
+            else "warning"
+            if outcome == "blocked"
+            else "info"
+        )
+        title = {
+            "sandbox_settled": "Sandbox payment approved",
+            "blocked": "Reorder needs attention",
+            "wait": "Reorder check completed",
+        }.get(outcome, "Agent evaluation completed")
+        self.db.add(
+            LedgerEvent(
+                owner_id=run.owner_id,
+                event_type=f"agent_{outcome}",
+                title=title,
+                detail=explanation,
+                severity=severity,
+                agent_run_id=run.id,
+                supply_id=run.supply_id,
+                purchase_order_id=run.purchase_order.id if run.purchase_order else None,
+                metadata_safe={"trigger_id": run.trigger_id, "state": state},
+            )
+        )
         self.db.commit()
         persisted = self._find_run(run.owner_id, run.trigger_id)
         if persisted is None:

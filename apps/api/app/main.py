@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.routers.agent_runs import router as agent_runs_router
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
+from app.routers.ledger import router as ledger_router
 from app.routers.mandates import router as mandates_router
 from app.routers.setup import router as setup_router
 from app.scheduler import ReplenishmentScheduler
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     application.include_router(setup_router, prefix="/api/v1")
     application.include_router(mandates_router, prefix="/api/v1")
     application.include_router(agent_runs_router, prefix="/api/v1")
+    application.include_router(ledger_router, prefix="/api/v1")
     return application
 
 

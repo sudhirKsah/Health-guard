@@ -293,3 +293,17 @@ class AgentRunOut(ApiModel):
 class AgentRunStartOut(BaseModel):
     run: AgentRunOut
     reused: bool
+
+
+class LedgerEventOut(ApiModel):
+    id: UUID
+    event_type: str
+    title: str
+    detail: str
+    severity: str
+    agent_run_id: UUID | None
+    supply_id: UUID | None
+    purchase_order_id: UUID | None
+    metadata_safe: dict[str, object]
+    read_at: datetime | None
+    created_at: datetime

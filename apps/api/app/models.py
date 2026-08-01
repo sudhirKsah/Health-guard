@@ -55,6 +55,9 @@ class User(Timestamped, Base):
     purchase_orders: Mapped[list[PurchaseOrder]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    ledger_events: Mapped[list[LedgerEvent]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
 
 
 class SessionToken(Base):
@@ -388,3 +391,24 @@ class PurchaseOrder(Timestamped, Base):
     merchant_authorization: Mapped[MerchantAuthorization] = relationship(
         back_populates="purchase_orders"
     )
+
+
+class LedgerEvent(Base):
+    """Append-only, credential-free caregiver audit event."""
+
+    __tablename__ = "ledger_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    agent_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True)
+    supply_id: Mapped[UUID | None] = mapped_column(ForeignKey("supplies.id", ondelete="SET NULL"), index=True)
+    purchase_order_id: Mapped[UUID | None] = mapped_column(ForeignKey("purchase_orders.id", ondelete="SET NULL"), index=True)
+    metadata_safe: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    owner: Mapped[User] = relationship(back_populates="ledger_events")
