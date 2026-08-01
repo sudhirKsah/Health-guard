@@ -40,6 +40,14 @@ input, select { min-width: 0; width: 100%; border: 1px solid #b9c9bd; border-rad
 .approval-panel { padding: 14px; border: 1px solid #91bb9c; border-radius: 9px; background: #f2f9f2; }
 .approval-panel p { margin: 0; }
 .agent-runs { margin-top: 28px; }
+.trust-panel { margin-top: 28px; }
+.low-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+.ledger-list { display: grid; gap: 8px; }
+.ledger-event { border-left: 3px solid #91bb9c; padding: 10px 12px; background: #f7faf4; }
+.ledger-event.warning { border-color: #d58734; background: #fff8e9; }
+.ledger-event.success { border-color: #246447; background: #eff8f0; }
+.ledger-event div { display: flex; justify-content: space-between; gap: 12px; }
+.ledger-event p { margin: 6px 0 0; line-height: 1.4; }
 .section-heading { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
 .section-heading .hint { max-width: 400px; margin: 0; }
 .run-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }

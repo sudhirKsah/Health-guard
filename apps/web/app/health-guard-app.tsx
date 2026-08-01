@@ -6,8 +6,9 @@ import { AgentRunsPanel } from "./components/agent-runs-panel";
 import { AuthPanel } from "./components/auth-panel";
 import { CareSetup } from "./components/care-setup";
 import { MandateControls } from "./components/mandate-controls";
+import { TrustPanel } from "./components/trust-panel";
 import { api, formValue } from "./lib/api";
-import type { AgentRun, Dashboard, MandateSetupSession, Session } from "./lib/types";
+import type { AgentRun, Dashboard, LedgerEvent, MandateSetupSession, Session } from "./lib/types";
 
 const sessionKey = "health-guard-session";
 
@@ -19,17 +20,20 @@ export function HealthGuardApp() {
   });
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [events, setEvents] = useState<LedgerEvent[]>([]);
   const [mode, setMode] = useState<"login" | "register">("register");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async (activeSession: Session) => {
-    const [nextDashboard, nextRuns] = await Promise.all([
+    const [nextDashboard, nextRuns, nextEvents] = await Promise.all([
       api<Dashboard>("/setup/dashboard", activeSession.access_token),
       api<AgentRun[]>("/agent-runs", activeSession.access_token),
+      api<LedgerEvent[]>("/ledger/events", activeSession.access_token),
     ]);
     setDashboard(nextDashboard);
     setRuns(nextRuns);
+    setEvents(nextEvents);
   }, []);
 
   useEffect(() => {
@@ -87,6 +91,14 @@ export function HealthGuardApp() {
     finally { setBusy(false); }
   }
 
+  async function signalRunningLow(supplyId: string) {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try { await api(`/ledger/supplies/${supplyId}/running-low`, session.access_token, { method: "POST" }); await refresh(session); setNotice("Low-supply signal recorded. The agent evaluated it under the existing limits."); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Could not record the low-supply signal"); }
+    finally { setBusy(false); }
+  }
+
   async function scheduleRun(supplyId: string, runAt: Date) {
     if (!session) return;
     setBusy(true); setNotice("");
@@ -132,5 +144,5 @@ export function HealthGuardApp() {
   if (!session) return <AuthPanel mode={mode} busy={busy} notice={notice} onModeChange={setMode} onSubmit={submitAuth} />;
   if (!dashboard) return <main className="auth-shell"><p className="muted">Loading your private care setup…</p>{notice && <p className="notice">{notice}</p>}</main>;
 
-  return <main className="dashboard-shell"><header className="topbar"><div><p className="eyebrow">Health Guard</p><h1>Your care setup</h1></div><div className="account"><span>{session.user.email}</span><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></header><p className="intro">The Replenishment Agent works only from declared inventory, exact product approvals, and active merchant mandates. It never invents an offer, bypasses a cap, or sees payment credentials.</p>{notice && <p className="notice" role="status">{notice}</p>}<AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} onSchedule={scheduleRun} /><CareSetup dashboard={dashboard} busy={busy} onCreate={createSetup} onToggle={toggle} /><MandateControls authorizations={dashboard.merchant_authorizations} busy={busy} onSetup={createMandate} onSync={syncMandate} onAction={mandateAction} /></main>;
+  return <main className="dashboard-shell"><header className="topbar"><div><p className="eyebrow">Health Guard</p><h1>Your care setup</h1></div><div className="account"><span>{session.user.email}</span><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></header><p className="intro">The Replenishment Agent works only from declared inventory, exact product approvals, and active merchant mandates. It never invents an offer, bypasses a cap, or sees payment credentials.</p>{notice && <p className="notice" role="status">{notice}</p>}<TrustPanel events={events} supplies={supplies} busy={busy} onRunningLow={signalRunningLow} /><AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} onSchedule={scheduleRun} /><CareSetup dashboard={dashboard} busy={busy} onCreate={createSetup} onToggle={toggle} /><MandateControls authorizations={dashboard.merchant_authorizations} busy={busy} onSetup={createMandate} onSync={syncMandate} onAction={mandateAction} /></main>;
 }

@@ -107,3 +107,5 @@ export type AgentRun = {
   steps: AgentStep[];
   offer_snapshots: OfferSnapshot[];
 };
+
+export type LedgerEvent = { id: string; event_type: string; title: string; detail: string; severity: "info" | "success" | "warning"; agent_run_id: string | null; supply_id: string | null; purchase_order_id: string | null; metadata_safe: Record<string, unknown>; read_at: string | null; created_at: string };
