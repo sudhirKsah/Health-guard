@@ -17,6 +17,10 @@ import type { AgentRun, Dashboard, LedgerEvent, MandateSetupSession, ProductSugg
 import type { WorkspacePage } from "./workspace-page";
 
 const sessionKey = "health-guard-session";
+// Mandate approval happens on Prava's site; poll for the result, but give up after ~5 minutes.
+const PENDING_SYNC_MS = 5_000;
+const PENDING_SYNC_ATTEMPTS = 60;
+const ACTIVE_SYNC_MS = 300_000;
 
 export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading: { eyebrow: string; title: string; subtitle: string } }) {
   // Read on the client only, after mount. Reading sessionStorage in the initializer made the
@@ -60,10 +64,14 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   }, []);
 
   useEffect(() => {
-    const raw = window.sessionStorage.getItem(sessionKey);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (raw) setSession(JSON.parse(raw) as Session);
-     
+    try {
+      const raw = window.sessionStorage.getItem(sessionKey);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (raw) setSession(JSON.parse(raw) as Session);
+    } catch {
+      // A corrupt stored session must not take the whole app down: drop it and show sign-in.
+      window.sessionStorage.removeItem(sessionKey);
+    }
     setRestored(true);
   }, []);
 
@@ -93,36 +101,48 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   }, [endSession, refresh, session]);
 
   const supplies = useMemo(() => dashboard?.beneficiaries.flatMap((beneficiary) => beneficiary.supplies) ?? [], [dashboard]);
-  const pendingMandateIds = useMemo(() => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "pending").map((item) => item.id) ?? [], [dashboard]);
+  // Both of these MUST be stable strings, not arrays. A fresh array identity on every dashboard
+  // update re-runs the effect below, which syncs, which refreshes, which produces a new dashboard —
+  // an unbounded request loop that ignores the interval entirely.
+  const pendingMandateKey = useMemo(
+    () => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "pending").map((item) => item.id).sort().join(",") ?? "",
+    [dashboard],
+  );
   const activeMandateKey = useMemo(
     () => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "active").map((item) => item.id).sort().join(",") ?? "",
     [dashboard],
   );
 
+  // A pending mandate is approved on Prava's own site, so its result is genuinely unobservable
+  // here — this is the one case that warrants polling. It stops as soon as the mandate leaves
+  // "pending", and gives up after PENDING_SYNC_ATTEMPTS so an abandoned approval cannot hammer
+  // Prava forever. No refresh() call: the sync changes the database, and SSE delivers that.
   useEffect(() => {
-    if (!session || !pendingMandateIds.length) return;
+    if (!session || !pendingMandateKey) return;
+    const ids = pendingMandateKey.split(",");
     let stopped = false;
-    const syncPending = async () => {
-      await Promise.all(pendingMandateIds.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
-      if (!stopped) await refresh(session).catch(() => undefined);
-    };
-    void syncPending();
-    const timer = window.setInterval(() => void syncPending(), 4000);
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      if (stopped) return;
+      if (++attempts > PENDING_SYNC_ATTEMPTS) { window.clearInterval(timer); return; }
+      void Promise.all(ids.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
+    }, PENDING_SYNC_MS);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [pendingMandateIds, refresh, session]);
+  }, [pendingMandateKey, session]);
 
+  // An active mandate only changes through our own charges (which sync before charging) or an
+  // action taken in Prava's dashboard. A slow reconciliation is enough; the cap and remaining
+  // balance shown here being a few minutes stale never affects a payment decision.
   useEffect(() => {
     if (!session || !activeMandateKey) return;
-    const activeIds = activeMandateKey.split(",");
+    const ids = activeMandateKey.split(",");
     let stopped = false;
-    const syncActive = async () => {
-      await Promise.all(activeIds.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
-      if (!stopped) await refresh(session).catch(() => undefined);
-    };
-    void syncActive();
-    const timer = window.setInterval(() => void syncActive(), 60_000);
+    const timer = window.setInterval(() => {
+      if (stopped) return;
+      void Promise.all(ids.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
+    }, ACTIVE_SYNC_MS);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [activeMandateKey, refresh, session]);
+  }, [activeMandateKey, session]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

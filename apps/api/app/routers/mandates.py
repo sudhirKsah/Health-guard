@@ -136,6 +136,22 @@ def apply_mandate(
     return previous_status, returned_status
 
 
+def _mandate_snapshot(authorization: MerchantAuthorization) -> tuple[object, ...]:
+    """Every mandate field a caller can observe — deliberately excluding mandate_synced_at."""
+    return (
+        authorization.prava_mandate_id,
+        authorization.mandate_status,
+        authorization.mandate_approved_amount,
+        authorization.mandate_remaining_amount,
+        authorization.mandate_currency,
+        authorization.mandate_frequency,
+        authorization.mandate_valid_until,
+        authorization.mandate_renews_at,
+        authorization.mandate_last_charge_at,
+        authorization.mandate_last_charge_status,
+    )
+
+
 def handle_prava_error(error: Exception) -> HTTPException:
     if isinstance(error, PravaConfigurationError):
         return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error))
@@ -283,10 +299,17 @@ def sync_mandate(
         db.commit()
         db.refresh(authorization)
         return MerchantAuthorizationOut.model_validate(authorization)
+    # Snapshot before applying: an unchanged mandate must not touch the row. Writing
+    # mandate_synced_at on every poll bumps updated_at, which the realtime fingerprint watches,
+    # which pushes a refresh to every open tab — a sync/refresh feedback loop.
+    before = _mandate_snapshot(authorization)
     try:
         previous_status, resulting_status = apply_mandate(authorization, mandate)
     except PravaApiError as error:
         raise handle_prava_error(error) from error
+    if _mandate_snapshot(authorization) == before:
+        db.rollback()
+        return MerchantAuthorizationOut.model_validate(authorization)
     if previous_status != resulting_status:
         add_event(
             db,

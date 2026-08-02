@@ -53,6 +53,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
+        # Every authenticated request is preflighted. Without this the browser re-asks before each
+        # one, doubling request volume for no benefit.
+        max_age=600,
     )
     application.include_router(health_router, prefix="/api/v1")
     application.include_router(auth_router, prefix="/api/v1")
