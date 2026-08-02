@@ -19,11 +19,11 @@ import type { WorkspacePage } from "./workspace-page";
 const sessionKey = "health-guard-session";
 
 export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading: { eyebrow: string; title: string; subtitle: string } }) {
-  const [session, setSession] = useState<Session | null>(() => {
-    if (typeof window === "undefined") return null;
-    const raw = window.sessionStorage.getItem(sessionKey);
-    return raw ? (JSON.parse(raw) as Session) : null;
-  });
+  // Read on the client only, after mount. Reading sessionStorage in the initializer made the
+  // server render the signed-out view while the client rendered the signed-in one, which React
+  // reports as a hydration mismatch and then throws the whole tree away.
+  const [session, setSession] = useState<Session | null>(null);
+  const [restored, setRestored] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [events, setEvents] = useState<LedgerEvent[]>([]);
@@ -57,6 +57,14 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     setEvents([]);
     setTransactions([]);
     setAutomationTimings([]);
+  }, []);
+
+  useEffect(() => {
+    const raw = window.sessionStorage.getItem(sessionKey);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (raw) setSession(JSON.parse(raw) as Session);
+     
+    setRestored(true);
   }, []);
 
   useEffect(() => {
@@ -200,7 +208,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     try {
       const result = await api<{ run: AgentRun; reused: boolean }>(`/agent-runs/supplies/${supplyId}/test-payment`, session.access_token, { method: "POST", body: JSON.stringify({ confirmed: true, trigger_id: `payment-test:${crypto.randomUUID()}` }) });
       await refresh(session);
-      setNotice(result.run.outcome === "sandbox_settled" ? "Payment test approved. The transaction is now visible in Payment transactions." : result.run.explanation ?? "The payment test finished without a charge.");
+      setNotice(result.run.outcome === "purchased" ? "Order placed. The merchant accepted the payment — see Payment transactions." : result.run.outcome === "checkout_declined" ? "End-to-end flow completed: the one-time card reached the merchant and was declined, which is the expected sandbox result. No stock was added." : result.run.explanation ?? "The payment test finished without a charge.");
     } catch (error) { setNotice(error instanceof Error ? error.message : "Could not run the payment test"); }
     finally { setBusy(false); }
   }
@@ -235,6 +243,8 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     endSession();
   }
 
+  // Until the stored session has been read, render exactly what the server rendered.
+  if (!restored) return <main className="auth-shell"><p className="muted">Loading Health Guard…</p></main>;
   if (!session) return <AuthPanel mode={mode} busy={busy} notice={notice} onModeChange={setMode} onSubmit={submitAuth} />;
   if (!dashboard) return <main className="auth-shell"><p className="muted">Loading your care information…</p>{notice && <p className="notice">{notice}</p>}</main>;
 

@@ -18,9 +18,11 @@ const stageLabels: Record<string, string> = {
 };
 
 function outcomeLabel(run: AgentRun) {
-  if (run.outcome === "sandbox_settled") return "Payment approved";
+  if (run.outcome === "purchased") return "Order placed";
+  if (run.outcome === "checkout_declined") return "Merchant declined";
   if (run.outcome === "blocked") return "No purchase made";
   if (run.outcome === "wait") return "No order needed";
+  if (run.outcome === "frequency_wait") return "Waiting for renewal";
   return run.status === "running" ? "Checking now" : "Check completed";
 }
 
@@ -32,7 +34,7 @@ export function AgentRunsPanel({ supplies, runs, busy, onStart }: Props) {
       {!runs.length && supplies.length > 0 && <p className="empty-state">The first automatic check will appear here.</p>}
       <div className="run-list">{runs.slice(0, 10).map((run) => {
         const supply = supplies.find((item) => item.id === run.supply_id);
-        return <article key={run.id} className="run-card"><header><div><strong>{supply?.name ?? "Supply check"}</strong><small>{new Date(run.created_at).toLocaleString()}</small></div><span className={`status-pill ${run.outcome === "sandbox_settled" ? "approved" : run.outcome ?? run.status}`}>{outcomeLabel(run)}</span></header>{run.explanation && <p>{run.explanation}</p>}<div className="friendly-steps">{run.steps.map((step) => <span className={step.status === "success" ? "done" : step.status} key={step.id}>{stageLabels[step.stage] ?? "Completed a safe check"}</span>)}</div></article>;
+        return <article key={run.id} className="run-card"><header><div><strong>{supply?.name ?? "Supply check"}</strong><small>{new Date(run.created_at).toLocaleString()}</small></div><span className={`status-pill ${run.outcome === "purchased" ? "approved" : run.outcome === "checkout_declined" ? "declined" : run.outcome ?? run.status}`}>{outcomeLabel(run)}</span></header>{run.explanation && <p>{run.explanation}</p>}<div className="friendly-steps">{run.steps.map((step) => <span className={step.status === "success" ? "done" : step.status} key={step.id}>{stageLabels[step.stage] ?? "Completed a safe check"}</span>)}</div></article>;
       })}</div>
     </section>
   );

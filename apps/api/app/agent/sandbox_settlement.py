@@ -8,6 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.integrations.merchant_checkout import (
+    DeliveryAddress,
+    MerchantCheckoutExecutor,
+    build_checkout_executor,
+)
 from app.integrations.prava import (
     PravaApiError,
     PravaClient,
@@ -33,10 +38,16 @@ class SandboxSettlementResult:
     status: str
     failure_code: str | None
     next_eligible_at: datetime | None = None
+    merchant_order_id: str | None = None
 
 
 class SandboxSettlementExecutor:
-    """Runs Prava's documented sandbox settlement flow without inventing merchant fulfillment."""
+    """Runs Prava's end-to-end flow: charge → merchant checkout → settle the true outcome.
+
+    The mandate charge only mints a single-use card; it does not buy anything. This executor
+    presents that card at the real merchant and reports whatever the merchant's processor
+    actually returned. It never reports APPROVED for a checkout that did not happen.
+    """
 
     def __init__(
         self,
@@ -44,10 +55,12 @@ class SandboxSettlementExecutor:
         *,
         settings: Settings | None = None,
         prava: PravaClient | None = None,
+        checkout: MerchantCheckoutExecutor | None = None,
     ) -> None:
         self._db = db
         self._settings = settings or get_settings()
         self._prava = prava or PravaClient(self._settings)
+        self._checkout = checkout or build_checkout_executor()
 
     def enabled(self, *, explicit_test: bool = False) -> bool:
         return (
@@ -63,6 +76,8 @@ class SandboxSettlementExecutor:
         amount: Decimal,
         product_description: str,
         product_id: str,
+        variant_id: str,
+        address: DeliveryAddress,
         pack_quantity: Decimal,
         pack_unit: str,
         quantity: int = 1,
@@ -220,18 +235,43 @@ class SandboxSettlementExecutor:
             self._db.commit()
             return SandboxSettlementResult(order.status, order.failure_code)
 
+        if charge.credentials is None:
+            order.status = "charge_failed"
+            order.failure_code = "prava_charge_without_credentials"
+            self._db.commit()
+            return SandboxSettlementResult(order.status, order.failure_code)
+
         order.prava_transaction_id = charge.transaction_id
         order.prava_order_id = charge.order_id
         order.charged_amount = amount
-        order.status = "sandbox_settling"
+        order.status = "checkout_pending"
         order.charged_at = datetime.now(UTC)
+        self._db.commit()
+
+        # The one-time card exists only inside this call. It is handed straight to the checkout
+        # executor and is never persisted, logged, or passed to the model layer.
+        outcome = self._checkout.checkout(
+            merchant_domain=authorization.merchant_domain,
+            variant_id=variant_id,
+            quantity=quantity,
+            amount=amount,
+            currency=order.currency,
+            credentials=charge.credentials,
+            address=address,
+        )
+        order.checkout_attempted_at = datetime.now(UTC)
+        order.checkout_decline_code = outcome.decline_code
+        order.merchant_order_id = outcome.merchant_order_id
+        if outcome.is_success:
+            order.checkout_completed_at = order.checkout_attempted_at
 
         try:
             report = self._prava.report_mandate_charge(
                 mandate_id=authorization.prava_mandate_id,
                 transaction_id=charge.transaction_id,
-                transaction_status="APPROVED",
-                amount_paid=amount,
+                transaction_status=outcome.prava_report_status,
+                amount_paid=amount if outcome.is_success else None,
+                response_code=outcome.response_code,
             )
         except (PravaApiError, PravaUnavailableError) as error:
             order.status = "report_failed"
@@ -239,18 +279,61 @@ class SandboxSettlementExecutor:
             self._db.commit()
             return SandboxSettlementResult(order.status, order.failure_code)
 
-        if report.status != "completed" or report.visa_confirmation != "SUCCESS":
+        # Verified against the sandbox: Prava echoes the settlement it recorded, not the health of
+        # the report call. An APPROVED report settles "completed"; a DECLINED report settles
+        # "failed" — the transaction failed, which is exactly what we asked it to record. Treating
+        # "failed" as an error made a correctly-settled decline look like a broken integration.
+        if report.status not in {"completed", "failed"}:
             order.status = "report_failed"
-            order.failure_code = "sandbox_settlement_not_confirmed"
+            order.failure_code = "settlement_not_confirmed"
+            self._db.commit()
+            return SandboxSettlementResult(order.status, order.failure_code)
+        if outcome.is_success and report.status != "completed":
+            # We claimed a merchant order but Prava did not confirm the settlement. Never let this
+            # stand as a completed purchase.
+            order.status = "report_failed"
+            order.failure_code = "approved_settlement_not_confirmed"
             self._db.commit()
             return SandboxSettlementResult(order.status, order.failure_code)
 
-        order.status = "sandbox_settled"
-        order.report_status = "APPROVED"
         order.reported_at = datetime.now(UTC)
-        order.failure_code = None
+        order.report_status = outcome.prava_report_status
         authorization.mandate_last_charge_at = order.reported_at
-        authorization.mandate_last_charge_status = "APPROVED"
+        # Verified against a live sandbox mandate: a charge settled DECLINED leaves spent="0.00",
+        # chargeCount=0 and the full remaining balance, so a decline does NOT consume the cycle and
+        # a genuine retry stays possible. Only an APPROVED settlement draws down `remaining`, which
+        # is what mandate_charge_window keys off.
+        authorization.mandate_last_charge_status = outcome.prava_report_status
+
+        if not outcome.is_success:
+            order.status = "checkout_declined"
+            order.failure_code = outcome.decline_code
+            # Inventory is deliberately untouched: no goods were ordered.
+            self._db.add(
+                LedgerEvent(
+                    owner_id=run.owner_id,
+                    event_type="merchant_checkout_declined",
+                    title=f"{supply.name} purchase was not completed",
+                    detail=(
+                        outcome.detail
+                        or "The merchant did not accept the one-time card, so no order was placed."
+                    )
+                    + " The payment was settled as DECLINED and stock was not changed.",
+                    severity="warning",
+                    agent_run_id=run.id,
+                    supply_id=supply.id,
+                    purchase_order_id=order.id,
+                    metadata_safe={
+                        "decline_code": outcome.decline_code,
+                        "merchant": authorization.merchant_name,
+                    },
+                )
+            )
+            self._db.commit()
+            return SandboxSettlementResult(order.status, order.failure_code)
+
+        order.status = "completed"
+        order.failure_code = None
         supply.payment_deferred_until = None
         movement = record_purchased_stock(
             self._db,
@@ -266,7 +349,8 @@ class SandboxSettlementExecutor:
                 event_type="stock_automatically_replenished",
                 title=f"{supply.name} stock replenished",
                 detail=(
-                    f"An approved purchase added {movement.quantity_delta} {pack_unit}(s). "
+                    f"Merchant order {outcome.merchant_order_id} added "
+                    f"{movement.quantity_delta} {pack_unit}(s). "
                     f"Estimated stock is now {movement.balance_after}."
                 ),
                 severity="success",
@@ -277,11 +361,14 @@ class SandboxSettlementExecutor:
                     "quantity_added": str(movement.quantity_delta),
                     "balance_after": str(movement.balance_after),
                     "unit": pack_unit,
+                    "merchant_order_id": outcome.merchant_order_id,
                 },
             )
         )
         self._db.commit()
-        return SandboxSettlementResult(order.status, None)
+        return SandboxSettlementResult(
+            order.status, None, merchant_order_id=outcome.merchant_order_id
+        )
 
     def _sync_mandate_state(
         self, *, run: AgentRun, authorization: MerchantAuthorization

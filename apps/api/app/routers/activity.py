@@ -13,9 +13,15 @@ router = APIRouter(prefix="/activity", tags=["user activity"])
 
 
 def transaction_status(order: PurchaseOrder) -> str:
-    if order.report_status == "APPROVED" or order.status == "sandbox_settled":
+    # "approved" requires a real merchant order. A settled charge with no order is not a purchase.
+    if order.report_status == "APPROVED" and order.merchant_order_id:
         return "approved"
-    if order.report_status == "DECLINED" or order.status in {"charge_failed", "report_failed"}:
+    if order.report_status == "DECLINED" or order.status in {
+        "charge_failed",
+        "report_failed",
+        "checkout_declined",
+        "settled_without_checkout",
+    }:
         return "declined"
     return "pending"
 
@@ -31,30 +37,47 @@ def transaction_copy(
     amount = order.charged_amount or order.requested_amount
     money = f"{order.currency} {amount:.2f}"
     if status_value == "approved":
-        fulfillment = (
-            f" Merchant order {order.merchant_order_id} was recorded."
-            if order.merchant_order_id
-            else " Payment approval is recorded; merchant fulfillment is not recorded by this sandbox flow."
-        )
         inventory = (
             f" {order.purchased_quantity} {order.purchased_unit}(s) were added to tracked stock."
             if order.purchased_quantity is not None and order.purchased_unit
             else ""
         )
         return (
-            "Payment approved",
-            f"{supply.name} for {beneficiary.name} was approved at {merchant.merchant_name} for {money}.{fulfillment}{inventory}",
+            "Order placed",
+            f"{supply.name} for {beneficiary.name} was purchased at {merchant.merchant_name} for "
+            f"{money}. Merchant order {order.merchant_order_id} was confirmed.{inventory}",
         )
     if status_value == "declined":
         reason = {
             "prava_charge_unavailable": "Prava could not authorize the payment",
             "prava_charge_not_ready": "the payment authorization was not ready",
+            "prava_charge_without_credentials": "Prava did not return a usable one-time card",
             "prava_report_unavailable": "the final payment result could not be confirmed",
-            "sandbox_settlement_not_confirmed": "Prava did not confirm the settlement",
+            "settlement_not_confirmed": "Prava did not confirm the settlement",
+            "merchant_declined": "the merchant's checkout refused the one-time card",
+            "merchant_checkout_not_configured": (
+                "merchant checkout is switched off, so the card was never presented"
+            ),
+            "playwright_not_installed": (
+                "the checkout browser is not installed, so the card was never presented"
+            ),
+            "delivery_address_not_configured": (
+                "this person has no delivery address yet, so the card was never presented"
+            ),
+            "card_fields_not_reached": (
+                "the merchant's checkout never showed card fields, so nothing was submitted"
+            ),
+            "merchant_result_unrecognized": (
+                "the card was submitted but the merchant's response could not be read"
+            ),
+            "merchant_checkout_never_attempted": (
+                "this older record was settled before merchant checkout existed"
+            ),
         }.get(order.failure_code or "", "the payment could not be completed")
         return (
             "Payment declined",
-            f"No payment completed for {supply.name} at {merchant.merchant_name}: {reason}.",
+            f"No order was placed for {supply.name} at {merchant.merchant_name}: {reason}. "
+            "Tracked stock was not changed.",
         )
     return (
         "Payment processing",

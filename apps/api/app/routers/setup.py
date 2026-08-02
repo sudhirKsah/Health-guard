@@ -278,11 +278,10 @@ def dashboard(
     )
     return SetupDashboard(
         beneficiaries=[
+            # Derived from the ORM row rather than field-by-field, so adding a beneficiary column
+            # cannot silently leave this endpoint constructing an incomplete model.
             BeneficiaryDashboard(
-                id=item.id,
-                name=item.name,
-                relationship_label=item.relationship_label,
-                is_active=item.is_active,
+                **BeneficiaryOut.model_validate(item).model_dump(),
                 supplies=[
                     SupplyDashboard.model_validate(supply)
                     for supply in item.supplies
@@ -303,10 +302,14 @@ def create_beneficiary(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> BeneficiaryOut:
+    values = payload.model_dump(exclude_unset=True, exclude_none=True)
+    values.pop("name", None)
+    values.pop("relationship_label", None)
     beneficiary = Beneficiary(
         owner_id=user.id,
         name=payload.name.strip(),
         relationship_label=payload.relationship_label.strip(),
+        **{key: value.strip() if isinstance(value, str) else value for key, value in values.items()},
     )
     db.add(beneficiary)
     db.commit()
@@ -323,6 +326,8 @@ def update_beneficiary(
 ) -> BeneficiaryOut:
     beneficiary = owned_beneficiary(db, user.id, beneficiary_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "delivery_country" and value is None:
+            continue  # NOT NULL with a default; clearing it is never meaningful
         setattr(beneficiary, field, value.strip() if isinstance(value, str) else value)
     db.commit()
     db.refresh(beneficiary)

@@ -12,6 +12,7 @@ from app.agent.policy import POLICY_VERSION, ApprovedVariantPolicy, OfferCandida
 from app.agent.sandbox_settlement import SandboxSettlementExecutor
 from app.agent.state import AgentState, validate_transition
 from app.agent.tools import CatalogSearchTool, ConfiguredVariant, InventoryTool
+from app.integrations.merchant_checkout import DeliveryAddress
 from app.integrations.openai_brain import OpenAIBrain
 from app.mandate_cycles import MandateChargeWindow, mandate_charge_window
 from app.models import (
@@ -284,6 +285,8 @@ class ReplenishmentAgent:
                     and offer.merchant_variant_id == policy.selected.merchant_variant_id
                 ),
                 product_id=policy.selected.merchant_product_id,
+                variant_id=policy.selected.merchant_variant_id,
+                address=delivery_address_for(supply.beneficiary),
                 pack_quantity=selected_variant.pack_quantity,
                 pack_unit=selected_variant.pack_unit,
                 explicit_test=self.explicit_sandbox_test,
@@ -291,10 +294,12 @@ class ReplenishmentAgent:
             self._record_step(
                 run,
                 stage="act",
-                tool_name="prava_sandbox_mandate_settlement",
+                tool_name="prava_mandate_charge_and_merchant_checkout",
                 status=(
                     "success"
-                    if settlement.status == "sandbox_settled"
+                    if settlement.status == "completed"
+                    else "declined"
+                    if settlement.status == "checkout_declined"
                     else "cancelled"
                     if settlement.status == "cancelled"
                     else "blocked"
@@ -311,34 +316,40 @@ class ReplenishmentAgent:
                         if settlement.next_eligible_at
                         else None
                     ),
-                    "merchant_fulfillment": "not_available_in_sandbox_settlement",
+                    "merchant_order_id": settlement.merchant_order_id,
                 },
             )
-            if settlement.status == "sandbox_settled":
+            if settlement.status in {"completed", "checkout_declined"}:
+                purchased = settlement.status == "completed"
                 self._transition(run, AgentState.VERIFY)
                 self._record_step(
                     run,
                     stage="verify",
-                    tool_name="verify_prava_sandbox_settlement",
-                    status="success",
-                    input_summary={
-                        "purchase_order_status": "sandbox_settled",
-                    },
+                    tool_name="verify_merchant_order_and_prava_settlement",
+                    status="success" if purchased else "declined",
+                    input_summary={"purchase_order_status": settlement.status},
                     output_summary={
-                        "prava_report_status": "APPROVED",
-                        "merchant_order_id": None,
-                        "merchant_fulfillment": "not_available_in_sandbox_settlement",
+                        "prava_report_status": "APPROVED" if purchased else "DECLINED",
+                        "merchant_order_id": settlement.merchant_order_id,
+                        "decline_code": settlement.failure_code,
                     },
                 )
                 return self._finish(
                     run,
                     state=AgentState.COMPLETE,
                     status="completed",
-                    outcome="sandbox_settled",
+                    outcome="purchased" if purchased else "checkout_declined",
                     explanation=(
-                        "Health Guard completed Prava's documented sandbox mandate charge and settlement "
-                        "flow. This verifies the payment transaction only; it does not create a merchant "
-                        "fulfillment order."
+                        f"Health Guard authorized the payment through Prava and completed the "
+                        f"purchase at {selected_authorization.merchant_name}. Merchant order "
+                        f"{settlement.merchant_order_id} was recorded and stock was updated."
+                        if purchased
+                        else (
+                            f"Health Guard authorized a one-time card through Prava and presented "
+                            f"it at {selected_authorization.merchant_name}, but the merchant did "
+                            "not accept it. The payment was settled as DECLINED and no stock was "
+                            "added."
+                        )
                     ),
                 )
             if settlement.status == "cancelled":
@@ -462,7 +473,9 @@ class ReplenishmentAgent:
         explanation: str,
     ) -> tuple[AgentRun, bool]:
         self._transition(run, state)
-        if outcome != "frequency_wait":
+        # Money outcomes keep their exact deterministic wording. A paraphrase that softened a
+        # decline into a success would misstate what happened to a real payment.
+        if outcome not in {"frequency_wait", "purchased", "checkout_declined"}:
             explanation = self.brain.explain_replenishment_decision(
                 facts={
                     "outcome": outcome,
@@ -478,13 +491,14 @@ class ReplenishmentAgent:
         run.completed_at = datetime.now(UTC)
         severity = (
             "success"
-            if outcome == "sandbox_settled"
+            if outcome == "purchased"
             else "warning"
-            if outcome == "blocked"
+            if outcome in {"blocked", "checkout_declined"}
             else "info"
         )
         title = {
-            "sandbox_settled": "Payment approved",
+            "purchased": "Order placed",
+            "checkout_declined": "Merchant declined the payment",
             "blocked": "Reorder needs attention",
             "wait": "Reorder check completed",
             "frequency_wait": "Payment waiting for mandate renewal",
@@ -512,6 +526,25 @@ class ReplenishmentAgent:
         current = AgentState(run.state)
         validate_transition(current, next_state)
         run.state = next_state
+
+
+def delivery_address_for(beneficiary: Beneficiary) -> DeliveryAddress:
+    """Build the checkout address for one beneficiary.
+
+    Kept out of the agent trace and every ledger event: this is the only place the plain values
+    are read, and they travel no further than the checkout executor.
+    """
+    return DeliveryAddress(
+        recipient=beneficiary.delivery_recipient or beneficiary.name,
+        line1=beneficiary.delivery_line1 or "",
+        line2=beneficiary.delivery_line2,
+        city=beneficiary.delivery_city or "",
+        region=beneficiary.delivery_region,
+        postal_code=beneficiary.delivery_postal_code or "",
+        country=beneficiary.delivery_country or "IN",
+        phone=beneficiary.delivery_phone,
+        email=beneficiary.delivery_email,
+    )
 
 
 def owned_supply_for_agent(db: Session, *, owner_id: UUID, supply_id: UUID) -> Supply | None:

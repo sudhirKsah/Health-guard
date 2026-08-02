@@ -55,6 +55,16 @@ export type Beneficiary = {
   name: string;
   relationship_label: string;
   is_active: boolean;
+  delivery_recipient: string | null;
+  delivery_email: string | null;
+  delivery_phone: string | null;
+  delivery_line1: string | null;
+  delivery_line2: string | null;
+  delivery_city: string | null;
+  delivery_region: string | null;
+  delivery_postal_code: string | null;
+  delivery_country: string;
+  has_delivery_address: boolean;
   supplies: Supply[];
 };
 
@@ -156,7 +166,7 @@ export type AgentRun = {
   goal: string;
   state: string;
   status: string;
-  outcome: "wait" | "reorder" | "sandbox_settled" | "blocked" | null;
+  outcome: "wait" | "reorder" | "purchased" | "checkout_declined" | "frequency_wait" | "blocked" | null;
   explanation: string | null;
   policy_version: string;
   days_until_stockout: string;

@@ -7,6 +7,13 @@ import pytest
 
 from app.agent.sandbox_settlement import SandboxSettlementExecutor
 from app.config import Settings
+from app.integrations.merchant_checkout import (
+    CHECKOUT_DECLINED,
+    CHECKOUT_SUCCEEDED,
+    CheckoutOutcome,
+    DeliveryAddress,
+    UnavailableCheckoutExecutor,
+)
 from app.integrations.prava import PravaClient
 from app.models import (
     AgentRun,
@@ -66,10 +73,52 @@ class FakeSettlementPrava:
             transaction_id="txn_stock",
             order_id="ord_stock",
             error_code=None,
+            credentials=SimpleNamespace(
+                token="4111111111111111",
+                dynamic_cvv="123",
+                expiry_month="12",
+                expiry_year="2030",
+            ),
         )
 
-    def report_mandate_charge(self, **_kwargs: object) -> object:
+    def report_mandate_charge(self, **kwargs: object) -> object:
+        self.reported_status = kwargs.get("transaction_status")
+        self.reported_amount = kwargs.get("amount_paid")
         return SimpleNamespace(status="completed", visa_confirmation="SUCCESS")
+
+
+class FakeCheckout:
+    """Stands in for the merchant checkout leg without touching a browser or a real store."""
+
+    def __init__(self, outcome: CheckoutOutcome) -> None:
+        self.outcome = outcome
+        self.calls = 0
+        self.seen_token: str | None = None
+
+    def checkout(self, *, credentials, **_kwargs: object) -> CheckoutOutcome:
+        self.calls += 1
+        self.seen_token = credentials.token
+        return self.outcome
+
+
+def succeeding_checkout() -> FakeCheckout:
+    return FakeCheckout(
+        CheckoutOutcome(CHECKOUT_SUCCEEDED, merchant_order_id="ord_merchant_1", response_code="00")
+    )
+
+
+def declining_checkout() -> FakeCheckout:
+    return FakeCheckout(CheckoutOutcome(CHECKOUT_DECLINED, decline_code="merchant_declined"))
+
+
+ADDRESS = DeliveryAddress(
+    recipient="Ashutosh Vats",
+    line1="1 Test Street",
+    city="Kochi",
+    region="Kerala",
+    postal_code="690525",
+    country="IN",
+)
 
 
 def settlement_entities() -> tuple[AgentRun, MerchantAuthorization, Supply]:
@@ -218,10 +267,12 @@ def test_deleted_supply_is_cancelled_at_the_final_gate_before_prava_charge() -> 
     run, authorization, _supply = settlement_entities()
     db = FakeSettlementDb([None, authorization, None])
     prava = FakeSettlementPrava()
+    checkout = succeeding_checkout()
     executor = SandboxSettlementExecutor(
         db,  # type: ignore[arg-type]
         settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
         prava=prava,  # type: ignore[arg-type]
+        checkout=checkout,
     )
 
     result = executor.execute(
@@ -230,6 +281,8 @@ def test_deleted_supply_is_cancelled_at_the_final_gate_before_prava_charge() -> 
         amount=Decimal("450"),
         product_description="Ashwagandha",
         product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
         pack_quantity=Decimal("60"),
         pack_unit="tablet",
         explicit_test=True,
@@ -244,10 +297,12 @@ def test_approved_purchase_adds_pack_to_stock_exactly_once() -> None:
     run, authorization, supply = settlement_entities()
     db = FakeSettlementDb([None, authorization, supply, None])
     prava = FakeSettlementPrava()
+    checkout = succeeding_checkout()
     executor = SandboxSettlementExecutor(
         db,  # type: ignore[arg-type]
         settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
         prava=prava,  # type: ignore[arg-type]
+        checkout=checkout,
     )
 
     result = executor.execute(
@@ -256,6 +311,8 @@ def test_approved_purchase_adds_pack_to_stock_exactly_once() -> None:
         amount=Decimal("450"),
         product_description="Ashwagandha",
         product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
         pack_quantity=Decimal("60"),
         pack_unit="tablet",
         explicit_test=True,
@@ -263,8 +320,14 @@ def test_approved_purchase_adds_pack_to_stock_exactly_once() -> None:
 
     order = next(item for item in db.added if isinstance(item, PurchaseOrder))
     movement = next(item for item in db.added if isinstance(item, StockMovement))
-    assert result.status == "sandbox_settled"
+    assert result.status == "completed"
+    assert result.merchant_order_id == "ord_merchant_1"
     assert prava.charge_calls == 1
+    # The one-time card reached the merchant leg, and only then was APPROVED settled.
+    assert checkout.calls == 1
+    assert checkout.seen_token == "4111111111111111"
+    assert prava.reported_status == "APPROVED"
+    assert order.merchant_order_id == "ord_merchant_1"
     assert supply.quantity_on_hand == Decimal("65.000")
     assert order.purchased_quantity == Decimal("60.000")
     assert movement.quantity_delta == Decimal("60.000")
@@ -277,10 +340,12 @@ def test_concurrent_run_is_cancelled_after_first_order_replenishes_stock() -> No
     supply.quantity_on_hand = Decimal("65")
     db = FakeSettlementDb([None, authorization, supply])
     prava = FakeSettlementPrava()
+    checkout = succeeding_checkout()
     executor = SandboxSettlementExecutor(
         db,  # type: ignore[arg-type]
         settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
         prava=prava,  # type: ignore[arg-type]
+        checkout=checkout,
     )
 
     result = executor.execute(
@@ -289,6 +354,8 @@ def test_concurrent_run_is_cancelled_after_first_order_replenishes_stock() -> No
         amount=Decimal("450"),
         product_description="Ashwagandha",
         product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
         pack_quantity=Decimal("60"),
         pack_unit="tablet",
         explicit_test=True,
@@ -303,10 +370,12 @@ def test_second_charge_in_same_mandate_cycle_is_stopped_before_prava_charge() ->
     run, authorization, supply = settlement_entities()
     db = FakeSettlementDb([None, authorization, supply])
     prava = FakeSettlementPrava(last_charge_at=datetime.now(UTC) - timedelta(hours=1))
+    checkout = succeeding_checkout()
     executor = SandboxSettlementExecutor(
         db,  # type: ignore[arg-type]
         settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
         prava=prava,  # type: ignore[arg-type]
+        checkout=checkout,
     )
 
     result = executor.execute(
@@ -315,6 +384,8 @@ def test_second_charge_in_same_mandate_cycle_is_stopped_before_prava_charge() ->
         amount=Decimal("450"),
         product_description="Ashwagandha",
         product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
         pack_quantity=Decimal("60"),
         pack_unit="tablet",
         explicit_test=True,
@@ -325,3 +396,155 @@ def test_second_charge_in_same_mandate_cycle_is_stopped_before_prava_charge() ->
     assert result.next_eligible_at is not None
     assert supply.payment_deferred_until == result.next_eligible_at
     assert prava.charge_calls == 0
+
+
+def test_merchant_decline_is_reported_declined_and_never_adds_stock() -> None:
+    """The expected sandbox end-to-end result: the card reaches the merchant and is refused."""
+    run, authorization, supply = settlement_entities()
+    db = FakeSettlementDb([None, authorization, supply])
+    prava = FakeSettlementPrava()
+    checkout = declining_checkout()
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+        checkout=checkout,
+    )
+
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+
+    order = next(item for item in db.added if isinstance(item, PurchaseOrder))
+    assert result.status == "checkout_declined"
+    assert checkout.calls == 1
+    assert prava.charge_calls == 1
+    assert prava.reported_status == "DECLINED"
+    # A decline must not claim an amount was paid.
+    assert prava.reported_amount is None
+    assert order.report_status == "DECLINED"
+    assert order.merchant_order_id is None
+    assert order.checkout_attempted_at is not None
+    # Nothing shipped, so tracked stock is untouched and no movement was written.
+    assert supply.quantity_on_hand == Decimal("5")
+    assert not any(isinstance(item, StockMovement) for item in db.added)
+    # The mandate cycle is not consumed by a decline, so a genuine retry stays possible.
+    assert authorization.mandate_last_charge_status == "DECLINED"
+
+
+def test_missing_checkout_capability_never_settles_as_approved() -> None:
+    """With no checkout executor configured, a charge can only ever settle DECLINED."""
+    run, authorization, supply = settlement_entities()
+    db = FakeSettlementDb([None, authorization, supply])
+    prava = FakeSettlementPrava()
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+        checkout=UnavailableCheckoutExecutor(),
+    )
+
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+
+    assert result.status == "checkout_declined"
+    assert result.failure_code == "merchant_checkout_not_configured"
+    assert prava.reported_status == "DECLINED"
+    assert supply.quantity_on_hand == Decimal("5")
+
+
+def test_checkout_outcome_only_maps_a_real_order_to_approved() -> None:
+    assert CheckoutOutcome(CHECKOUT_SUCCEEDED, merchant_order_id="o1").prava_report_status == "APPROVED"
+    assert CheckoutOutcome(CHECKOUT_DECLINED).prava_report_status == "DECLINED"
+    assert UnavailableCheckoutExecutor().checkout(
+        merchant_domain="example.test",
+        variant_id="v1",
+        quantity=1,
+        amount=Decimal("1"),
+        currency="INR",
+        credentials=SimpleNamespace(token="t", dynamic_cvv="c", expiry_month="12", expiry_year="2030"),
+    ).prava_report_status == "DECLINED"
+
+
+class ReportStatusPrava(FakeSettlementPrava):
+    """Echoes the settlement status Prava actually returns for each reported outcome."""
+
+    def report_mandate_charge(self, **kwargs: object) -> object:
+        self.reported_status = kwargs.get("transaction_status")
+        self.reported_amount = kwargs.get("amount_paid")
+        # Verified against the sandbox: DECLINED settles as "failed", APPROVED as "completed".
+        settled = "completed" if kwargs.get("transaction_status") == "APPROVED" else "failed"
+        return SimpleNamespace(status=settled, visa_confirmation=None)
+
+
+def _run_settlement(checkout, prava):
+    run, authorization, supply = settlement_entities()
+    db = FakeSettlementDb([None, authorization, supply])
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+        checkout=checkout,
+    )
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        variant_id="variant-1",
+        address=ADDRESS,
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+    return result, db, supply, authorization
+
+
+def test_declined_settlement_returning_failed_is_a_completed_settlement() -> None:
+    """Prava echoes status="failed" for a DECLINED report. That is a settled decline, not an error."""
+    prava = ReportStatusPrava()
+    result, db, supply, authorization = _run_settlement(declining_checkout(), prava)
+
+    assert prava.reported_status == "DECLINED"
+    assert result.status == "checkout_declined"
+    assert result.failure_code == "merchant_declined"
+    order = next(item for item in db.added if isinstance(item, PurchaseOrder))
+    assert order.report_status == "DECLINED"
+    assert order.reported_at is not None
+    assert supply.quantity_on_hand == Decimal("5")
+
+
+def test_approved_report_that_prava_does_not_confirm_is_never_a_purchase() -> None:
+    """If we claim a merchant order but Prava settles "failed", refuse to record a purchase."""
+
+    class DisagreeingPrava(FakeSettlementPrava):
+        def report_mandate_charge(self, **kwargs: object) -> object:
+            self.reported_status = kwargs.get("transaction_status")
+            return SimpleNamespace(status="failed", visa_confirmation=None)
+
+    result, db, supply, _ = _run_settlement(succeeding_checkout(), DisagreeingPrava())
+
+    assert result.status == "report_failed"
+    assert result.failure_code == "approved_settlement_not_confirmed"
+    assert supply.quantity_on_hand == Decimal("5")
+    assert not any(isinstance(item, StockMovement) for item in db.added)

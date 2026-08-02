@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { formValue } from "../lib/api";
-import type { Dashboard, ProductSuggestion, Supply, SupplyAutomationTiming } from "../lib/types";
+import type { Beneficiary, Dashboard, ProductSuggestion, Supply, SupplyAutomationTiming } from "../lib/types";
 
 type Props = {
   dashboard: Dashboard;
@@ -30,24 +30,77 @@ export function CareSetup(props: Props) {
   return <SuppliesPanel {...props} />;
 }
 
+function addressBody(form: HTMLFormElement) {
+  return {
+    delivery_recipient: formValue(form, "recipient") || null,
+    delivery_line1: formValue(form, "line1") || null,
+    delivery_line2: formValue(form, "line2") || null,
+    delivery_city: formValue(form, "city") || null,
+    delivery_region: formValue(form, "region") || null,
+    delivery_postal_code: formValue(form, "postal") || null,
+    delivery_country: formValue(form, "country") || "IN",
+    delivery_phone: formValue(form, "phone") || null,
+    delivery_email: formValue(form, "email") || null,
+  };
+}
+
+function AddressFields({ person }: { person?: Beneficiary }) {
+  return (
+    <>
+      <label>Recipient name<small>Who the courier asks for.</small><input name="recipient" defaultValue={person?.delivery_recipient ?? person?.name ?? ""} maxLength={160} /></label>
+      <label>Address<input name="line1" placeholder="House / street" defaultValue={person?.delivery_line1 ?? ""} maxLength={255} /></label>
+      <label>Apartment, landmark (optional)<input name="line2" defaultValue={person?.delivery_line2 ?? ""} maxLength={255} /></label>
+      <div className="split">
+        <label>City<input name="city" defaultValue={person?.delivery_city ?? ""} maxLength={120} /></label>
+        <label>State<input name="region" defaultValue={person?.delivery_region ?? ""} maxLength={120} /></label>
+      </div>
+      <div className="split">
+        <label>PIN code<input name="postal" defaultValue={person?.delivery_postal_code ?? ""} maxLength={24} /></label>
+        <label>Country<input name="country" defaultValue={person?.delivery_country ?? "IN"} maxLength={2} pattern="[A-Z]{2}" /></label>
+      </div>
+      <div className="split">
+        <label>Phone<input name="phone" type="tel" defaultValue={person?.delivery_phone ?? ""} maxLength={32} /></label>
+        <label>Email<input name="email" type="email" defaultValue={person?.delivery_email ?? ""} maxLength={320} /></label>
+      </div>
+    </>
+  );
+}
+
 function BeneficiariesPanel({ dashboard, busy, onCreate, onToggle }: Props) {
   return (
     <div className="content-grid">
       <section className="card stack">
-        <div><h2>Add someone</h2><p className="hint">Choose “Self” when these supplies are for you.</p></div>
+        <div><h2>Add someone</h2><p className="hint">Choose “Self” when these supplies are for you. The delivery address decides where this person’s orders are shipped — you can add it now or later.</p></div>
         <form className="stack compact" onSubmit={(event) => onCreate(event, "/setup/beneficiaries", {
           name: formValue(event.currentTarget, "name"),
           relationship_label: formValue(event.currentTarget, "relationship"),
+          ...addressBody(event.currentTarget),
         })}>
           <label>Name<input name="name" autoComplete="name" required maxLength={120} /></label>
           <label>Relationship<select name="relationship" defaultValue="Self" required><option>Self</option><option>Parent</option><option>Partner</option><option>Family member</option><option>Other</option></select></label>
+          <AddressFields />
           <button disabled={busy}>Add beneficiary</button>
         </form>
       </section>
       <section className="card stack">
         <h2>Your beneficiaries</h2>
         {!dashboard.beneficiaries.length && <p className="empty-state">No one has been added yet.</p>}
-        <div className="people-list">{dashboard.beneficiaries.map((item) => <article key={item.id} className="person-row"><div className="avatar" aria-hidden>{item.name.slice(0, 1).toUpperCase()}</div><div><strong>{item.name}</strong><small>{item.relationship_label}</small></div><button className="quiet" disabled={busy} onClick={() => onToggle(`/setup/beneficiaries/${item.id}`, { is_active: !item.is_active })}>{item.is_active ? "Active" : "Paused"}</button></article>)}</div>
+        <div className="people-list">{dashboard.beneficiaries.map((item) => <article key={item.id} className="supply-card">
+          <header><div><strong>{item.name}</strong><small>{item.relationship_label}</small></div><span className={`status-pill ${item.has_delivery_address ? "approved" : "needs_attention"}`}>{item.has_delivery_address ? "Address saved" : "Address needed"}</span></header>
+          {item.has_delivery_address
+            ? <p className="hint">Ships to {[item.delivery_line1, item.delivery_city, item.delivery_postal_code].filter(Boolean).join(", ")}</p>
+            : <p className="hint">Add a delivery address before automatic orders can be placed for {item.name}.</p>}
+          <details className="stock-manager">
+            <summary><span>Delivery address</span><small>Where {item.name}’s orders are shipped</small></summary>
+            <div className="stock-manager-body">
+              <form className="stack compact" onSubmit={(event) => { event.preventDefault(); onToggle(`/setup/beneficiaries/${item.id}`, addressBody(event.currentTarget)); }}>
+                <AddressFields person={item} />
+                <button className="quiet" disabled={busy}>Save address</button>
+              </form>
+            </div>
+          </details>
+          <div className="card-actions"><button className="quiet" disabled={busy} onClick={() => onToggle(`/setup/beneficiaries/${item.id}`, { is_active: !item.is_active })}>{item.is_active ? "Active" : "Paused"}</button></div>
+        </article>)}</div>
       </section>
     </div>
   );

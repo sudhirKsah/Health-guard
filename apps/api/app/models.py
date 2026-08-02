@@ -86,6 +86,32 @@ class Beneficiary(Timestamped, Base):
     relationship_label: Mapped[str] = mapped_column(String(80), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Where this person's supplies are delivered. Driving the merchant checkout ourselves means the
+    # address cannot stay behind Prava's vault, so these are real values: never log them, never put
+    # them in an agent trace, a ledger event, or a model prompt.
+    delivery_recipient: Mapped[str | None] = mapped_column(String(160))
+    delivery_email: Mapped[str | None] = mapped_column(String(320))
+    delivery_phone: Mapped[str | None] = mapped_column(String(32))
+    delivery_line1: Mapped[str | None] = mapped_column(String(255))
+    delivery_line2: Mapped[str | None] = mapped_column(String(255))
+    delivery_city: Mapped[str | None] = mapped_column(String(120))
+    delivery_region: Mapped[str | None] = mapped_column(String(120))
+    delivery_postal_code: Mapped[str | None] = mapped_column(String(24))
+    delivery_country: Mapped[str] = mapped_column(String(2), default="IN", nullable=False)
+
+    @property
+    def has_delivery_address(self) -> bool:
+        """A checkout can only be attempted when every field Shopify requires is present."""
+        return all(
+            (
+                self.delivery_recipient,
+                self.delivery_line1,
+                self.delivery_city,
+                self.delivery_postal_code,
+                self.delivery_country,
+            )
+        )
+
     owner: Mapped[User] = relationship(back_populates="beneficiaries")
     supplies: Mapped[list[Supply]] = relationship(
         back_populates="beneficiary", cascade="all, delete-orphan"
@@ -433,6 +459,10 @@ class PurchaseOrder(Timestamped, Base):
     merchant_order_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     report_status: Mapped[str | None] = mapped_column(String(16))
     failure_code: Mapped[str | None] = mapped_column(String(80))
+    # Evidence that the one-time card actually reached a merchant. A row with a charge but no
+    # checkout attempt must never be settled APPROVED.
+    checkout_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checkout_decline_code: Mapped[str | None] = mapped_column(String(80))
     charged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     checkout_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

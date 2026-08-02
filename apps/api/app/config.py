@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     prava_api_base_url: AnyHttpUrl = "https://sandbox.api.prava.space"
     health_guard_sandbox_settlement_enabled: bool = False
     health_guard_ucp_profile_url: AnyHttpUrl | None = None
+    # Which executor presents the one-time card at the merchant. "auto" prefers Prava's Browser
+    # Harness (CLI) and falls back to Playwright. Anything unavailable settles DECLINED, never
+    # APPROVED, so a misconfiguration can't be mistaken for a purchase.
+    # "playwright" drives the merchant's own checkout in-process with headless Chromium.
+    # "none" disables checkout entirely, so every charge settles DECLINED.
+    merchant_checkout_backend: str = "playwright"
+    # False opens a visible browser — useful for recording a demo of the decline.
+    checkout_headless: bool = True
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-terra"
     openai_reasoning_effort: str = "medium"

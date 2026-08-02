@@ -13,6 +13,9 @@ dependencies = [
   "fastapi>=0.115",
   "httpx>=0.28",
   "openai>=2.0,<3",
+  # Drives the merchant checkout that presents Prava's one-time card. This is the only path that
+  # can place an order, so it is a core dependency. Also run: playwright install chromium
+  "playwright>=1.49",
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.7",
   "sqlalchemy>=2.0",

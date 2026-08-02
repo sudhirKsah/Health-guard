@@ -54,12 +54,26 @@ class SessionOut(BaseModel):
     user: UserOut
 
 
-class BeneficiaryCreate(BaseModel):
+class DeliveryAddressFields(BaseModel):
+    """Where this person's supplies are shipped. Optional until an order is attempted."""
+
+    delivery_recipient: str | None = Field(default=None, max_length=160)
+    delivery_email: str | None = Field(default=None, max_length=320)
+    delivery_phone: str | None = Field(default=None, max_length=32)
+    delivery_line1: str | None = Field(default=None, max_length=255)
+    delivery_line2: str | None = Field(default=None, max_length=255)
+    delivery_city: str | None = Field(default=None, max_length=120)
+    delivery_region: str | None = Field(default=None, max_length=120)
+    delivery_postal_code: str | None = Field(default=None, max_length=24)
+    delivery_country: str | None = Field(default=None, pattern="^[A-Z]{2}$")
+
+
+class BeneficiaryCreate(DeliveryAddressFields):
     name: str = Field(min_length=1, max_length=120)
     relationship_label: str = Field(min_length=1, max_length=80)
 
 
-class BeneficiaryUpdate(BaseModel):
+class BeneficiaryUpdate(DeliveryAddressFields):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     relationship_label: str | None = Field(default=None, min_length=1, max_length=80)
     is_active: bool | None = None
@@ -70,6 +84,16 @@ class BeneficiaryOut(ApiModel):
     name: str
     relationship_label: str
     is_active: bool
+    delivery_recipient: str | None
+    delivery_email: str | None
+    delivery_phone: str | None
+    delivery_line1: str | None
+    delivery_line2: str | None
+    delivery_city: str | None
+    delivery_region: str | None
+    delivery_postal_code: str | None
+    delivery_country: str
+    has_delivery_address: bool
 
 
 class SupplyCreate(BaseModel):
@@ -324,6 +348,8 @@ class PurchaseOrderOut(ApiModel):
     merchant_order_id: str | None
     report_status: str | None
     failure_code: str | None
+    checkout_attempted_at: datetime | None
+    checkout_decline_code: str | None
     charged_at: datetime | None
     checkout_completed_at: datetime | None
     reported_at: datetime | None
