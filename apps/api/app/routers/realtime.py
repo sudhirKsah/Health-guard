@@ -87,7 +87,10 @@ async def stream_updates(
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     async def events():
-        previous: str | None = None
+        # Seed from the state at connect time. The client always loads once on mount, so emitting
+        # the very first fingerprint would make every page view fetch everything twice — which is
+        # exactly what it used to do. Only genuine changes after this point are worth a round trip.
+        previous: str | None = await asyncio.to_thread(owner_fingerprint, user.id)
         elapsed = 0.0
         yield "retry: 1500\n\n"
         while not await request.is_disconnected():

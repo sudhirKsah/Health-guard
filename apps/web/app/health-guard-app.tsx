@@ -17,6 +17,24 @@ import type { AgentRun, Dashboard, LedgerEvent, MandateSetupSession, ProductSugg
 import type { WorkspacePage } from "./workspace-page";
 
 const sessionKey = "health-guard-session";
+
+type Snapshot = {
+  dashboard: Dashboard;
+  runs: AgentRun[];
+  events: LedgerEvent[];
+  transactions: TransactionActivity[];
+  automationTimings: SupplyAutomationTiming[];
+  at: number;
+};
+
+// Every sidebar link is its own Next route, so navigating unmounts this component and mounts it
+// again from scratch. Without a cache outside React that meant a blank "Loading your care
+// information…" and five fresh requests on every single page change. This survives the remount so
+// a navigation paints immediately from memory.
+let snapshot: Snapshot | null = null;
+// Long enough to cover clicking through the sidebar, short enough that a change arriving during
+// the brief window when SSE is disconnected mid-navigation cannot go unnoticed for long.
+const SNAPSHOT_FRESH_MS = 3_000;
 // Mandate approval happens on Prava's site; poll for the result, but give up after ~5 minutes.
 const PENDING_SYNC_MS = 5_000;
 const PENDING_SYNC_ATTEMPTS = 60;
@@ -46,6 +64,14 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
       api<TransactionActivity[]>("/activity/transactions", activeSession.access_token),
       api<SupplyAutomationTiming[]>("/agent-runs/automation-timing", activeSession.access_token),
     ]);
+    snapshot = {
+      dashboard: nextDashboard,
+      runs: nextRuns,
+      events: nextEvents,
+      transactions: nextTransactions,
+      automationTimings: nextAutomationTimings,
+      at: Date.now(),
+    };
     setDashboard(nextDashboard);
     setRuns(nextRuns);
     setEvents(nextEvents);
@@ -53,8 +79,17 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     setAutomationTimings(nextAutomationTimings);
   }, []);
 
+  const applySnapshot = useCallback((cached: Snapshot) => {
+    setDashboard(cached.dashboard);
+    setRuns(cached.runs);
+    setEvents(cached.events);
+    setTransactions(cached.transactions);
+    setAutomationTimings(cached.automationTimings);
+  }, []);
+
   const endSession = useCallback(() => {
     window.sessionStorage.removeItem(sessionKey);
+    snapshot = null;
     setSession(null);
     setDashboard(null);
     setRuns([]);
@@ -68,15 +103,20 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
       const raw = window.sessionStorage.getItem(sessionKey);
       // eslint-disable-next-line react-hooks/set-state-in-effect
       if (raw) setSession(JSON.parse(raw) as Session);
+       
+      if (snapshot) applySnapshot(snapshot);
     } catch {
       // A corrupt stored session must not take the whole app down: drop it and show sign-in.
       window.sessionStorage.removeItem(sessionKey);
     }
     setRestored(true);
-  }, []);
+  }, [applySnapshot]);
 
   useEffect(() => {
     if (!session) return;
+    // A navigation that happened moments ago is already showing current data, and SSE is watching
+    // for changes, so re-fetching everything would only add latency to the page switch.
+    if (snapshot && Date.now() - snapshot.at < SNAPSHOT_FRESH_MS) return;
     // Restored browser-session state is synchronized after mount.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh(session).catch((error) => {
