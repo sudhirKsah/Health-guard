@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     database_url: str = LOCAL_DATABASE_URL
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Comma-separated exact origins. In production this must include the deployed frontend, or the
+    # browser blocks every request to this API.
     cors_origins: str = "http://localhost:3000"
+    # Optional regex for dynamic origins — Vercel gives every preview deployment its own hostname,
+    # which cannot be enumerated ahead of time. Leave empty to allow only the exact list above.
+    cors_origin_regex: str | None = None
     scheduler_enabled: bool = False
     scheduler_interval_minutes: int = 60
     prava_api_key: str | None = None

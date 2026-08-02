@@ -1,0 +1,33 @@
+# Everything here would otherwise be uploaded as build context on every deploy.
+# .postgres-data alone is hundreds of megabytes and would make builds crawl.
+.git
+.gitignore
+.postgres-data/
+.postgres-socket/
+.postgres.log
+*.log
+
+node_modules/
+apps/web/
+.next/
+
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+**/*.egg-info/
+
+# Secrets must come from the platform's environment, never from a build layer.
+.env
+.env.*
+!.env.example
+
+.agents/
+.codex/
+.claude/
+.idea/
+.vscode/

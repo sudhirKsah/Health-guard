@@ -31,6 +31,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_MS = 45_000
 
+# Required to launch Chromium inside a container. Without --no-sandbox it cannot create the user
+# namespaces it needs and refuses to start at all; without --disable-dev-shm-usage it crashes on
+# larger pages because Docker's default /dev/shm is only 64 MB.
+CONTAINER_LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+    "--disable-background-networking",
+]
+
+# Never needed to fill a checkout form, and the largest contributor to peak memory.
+BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
+
 # Phrases a Shopify checkout shows when the processor refuses the card. A sandbox test card is
 # expected to land here — that is the outcome Prava requires before granting production access.
 DECLINE_PHRASES = (
@@ -123,9 +137,21 @@ class PlaywrightCheckoutExecutor:
 
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=self._headless)
+                browser = playwright.chromium.launch(
+                    headless=self._headless, args=CONTAINER_LAUNCH_ARGS
+                )
                 try:
                     context = browser.new_context(locale="en-IN")
+                    # Checkout is a form: images, fonts and video are pure cost. Blocking them is
+                    # what keeps peak memory inside a 1 GB container, and it loads faster.
+                    context.route(
+                        "**/*",
+                        lambda route: (
+                            route.abort()
+                            if route.request.resource_type in BLOCKED_RESOURCE_TYPES
+                            else route.continue_()
+                        ),
+                    )
                     page = context.new_page()
                     page.set_default_timeout(self._timeout_ms)
                     page.goto(checkout_url, wait_until="domcontentloaded")
