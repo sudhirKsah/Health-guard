@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.database import dispose_database
 from app.routers.activity import router as activity_router
 from app.routers.agent_runs import router as agent_runs_router
 from app.routers.auth import router as auth_router
@@ -29,15 +30,14 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        scheduler = ReplenishmentScheduler(
-            interval_minutes=settings.scheduler_interval_minutes
-        )
+        scheduler = ReplenishmentScheduler(interval_minutes=settings.scheduler_interval_minutes)
         application.state.replenishment_scheduler = scheduler
         scheduler.start(recurring=settings.scheduler_enabled)
         try:
             yield
         finally:
             scheduler.shutdown()
+            dispose_database()
 
     application = FastAPI(
         title="Health Guard API",

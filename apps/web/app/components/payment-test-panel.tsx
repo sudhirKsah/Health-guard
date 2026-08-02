@@ -20,7 +20,10 @@ export function PaymentTestPanel({ dashboard, busy, onTest }: Props) {
   const authorizations = new Map(dashboard.merchant_authorizations.map((item) => [item.id, item]));
 
   return <div className="stack page-section"><section className="test-hero"><div><span className="test-badge">Sandbox only</span><h2>Test one recurring payment safely</h2><p>Choose a due supply. Health Guard rechecks the approved catalog item, applies the active mandate limits, requests one sandbox payment and records the result.</p></div><div className="test-flow" aria-label="Payment test steps"><span>1 Product</span><span>2 Rules</span><span>3 Prava</span><span>4 Result</span></div></section><section className="test-grid">{rows.map(({ beneficiary, supply }) => {
-    const variant = supply.equivalence_sets.flatMap((item) => item.approved_variants)[0];
+    const variants = supply.equivalence_sets.flatMap((item) => item.approved_variants);
+    // The agent may have exact matches at more than one merchant. Prefer a variant whose
+    // merchant has an active mandate, so this readiness screen matches what the agent can use.
+    const variant = variants.find((item) => authorizations.get(item.merchant_authorization_id)?.mandate_status === "active") ?? variants[0];
     const authorization = variant ? authorizations.get(variant.merchant_authorization_id) : undefined;
     const due = supply.order_due;
     const ready = supply.setup_status === "ready" && supply.is_enabled;
