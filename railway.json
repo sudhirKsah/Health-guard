@@ -5,12 +5,15 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "region": "asia-southeast1-eqsg3a",
+    "multiRegionConfig": {
+      "asia-southeast1-eqsg3a": {
+        "numReplicas": 1
+      }
+    },
     "healthcheckPath": "/api/v1/health/live",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3,
-    "numReplicas": 1,
     "sleepApplication": false
   }
 }
