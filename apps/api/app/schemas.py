@@ -115,6 +115,8 @@ class SupplyOut(ApiModel):
     agent_summary: str | None
     configured_at: datetime | None
     inventory_observed_at: datetime
+    payment_deferred_until: datetime | None
+    estimated_quantity_on_hand: Decimal
     next_order_at: datetime
     order_due: bool
 
@@ -146,6 +148,8 @@ class MerchantAuthorizationOut(ApiModel):
     health_guard_stop_after: datetime | None
     mandate_valid_until: datetime | None
     mandate_renews_at: datetime | None
+    mandate_last_charge_at: datetime | None
+    mandate_last_charge_status: str | None
     mandate_synced_at: datetime | None
 
 
@@ -206,14 +210,33 @@ class ApprovedVariantOut(ApiModel):
     display_name: str
     pack_quantity: Decimal
     pack_unit: str
+    latest_unit_price: Decimal | None
+    latest_currency: str | None
+    price_checked_at: datetime | None
 
 
 class EquivalenceSetDashboard(EquivalenceSetOut):
     approved_variants: list[ApprovedVariantOut]
 
 
+class StockMovementOut(ApiModel):
+    id: UUID
+    purchase_order_id: UUID | None
+    movement_type: str
+    quantity_delta: Decimal
+    balance_after: Decimal
+    unit: str
+    note: str
+    occurred_at: datetime
+
+
 class SupplyDashboard(SupplyOut):
     equivalence_sets: list[EquivalenceSetDashboard]
+    stock_movements: list[StockMovementOut]
+
+
+class StockCountRequest(BaseModel):
+    quantity_on_hand: Decimal = Field(ge=0, max_digits=12, decimal_places=3)
 
 
 class BeneficiaryDashboard(BeneficiaryOut):
@@ -304,6 +327,8 @@ class PurchaseOrderOut(ApiModel):
     charged_at: datetime | None
     checkout_completed_at: datetime | None
     reported_at: datetime | None
+    purchased_quantity: Decimal | None
+    purchased_unit: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -339,6 +364,14 @@ class SupplyAutomationTimingOut(BaseModel):
     reorder_threshold_at: datetime
     next_automatic_check_at: datetime | None
     state: str
+    chargeable_price: Decimal | None
+    chargeable_currency: str | None
+    price_checked_at: datetime | None
+    merchant_name: str | None
+    mandate_frequency: str | None
+    next_payment_eligible_at: datetime | None
+    payment_eligibility_state: str
+    payment_eligibility_message: str
 
 
 class LedgerEventOut(ApiModel):

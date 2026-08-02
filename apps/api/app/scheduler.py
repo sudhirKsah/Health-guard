@@ -5,7 +5,7 @@ from math import ceil
 from uuid import UUID, uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
 from app.agent.runtime import ReplenishmentAgent
@@ -79,7 +79,8 @@ class ReplenishmentScheduler:
         The agent owns all decisions and persists a unique run per supply/bucket. This worker does
         not manufacture offers, credentials, or checkout results.
         """
-        bucket = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M")
+        now = datetime.now(UTC)
+        bucket = now.strftime("%Y-%m-%dT%H:%M")
         with get_session_factory()() as db:
             supplies = list(
                 db.scalars(
@@ -88,6 +89,10 @@ class ReplenishmentScheduler:
                     .where(
                         Supply.is_enabled.is_(True),
                         Supply.deleted_at.is_(None),
+                        or_(
+                            Supply.payment_deferred_until.is_(None),
+                            Supply.payment_deferred_until <= now,
+                        ),
                         Beneficiary.is_active.is_(True),
                     )
                     .options(selectinload(Supply.beneficiary).selectinload(Beneficiary.owner))

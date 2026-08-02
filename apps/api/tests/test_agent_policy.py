@@ -6,6 +6,7 @@ from app.agent.state import AgentState, validate_transition
 from app.agent.tools import CatalogSearchTool, InventoryTool
 from app.config import Settings
 from app.integrations.ucp import UcpAdapter
+from app.mandate_cycles import mandate_charge_window
 from app.models import Supply
 
 
@@ -149,6 +150,92 @@ def test_policy_blocks_inactive_or_over_cap_mandates() -> None:
 
     assert inactive.rejected[0].reason == "mandate_not_active"
     assert over_cap.rejected[0].reason == "mandate_amount_cap_exceeded"
+
+
+def test_policy_rejects_offer_before_next_mandate_cycle() -> None:
+    decision = choose_offer(
+        offers=[offer()],
+        approved_variants=[
+            approval(mandate_next_charge_at=datetime.now(UTC) + timedelta(days=10))
+        ],
+        days_until_stockout=Decimal("4"),
+    )
+
+    assert decision.selected is None
+    assert decision.rejected[0].reason == "mandate_frequency_wait"
+
+
+def test_monthly_mandate_waits_until_prava_cycle_boundary_after_approved_charge() -> None:
+    now = datetime(2026, 8, 20, 9, tzinfo=UTC)
+    renewal = datetime(2026, 9, 2, 12, tzinfo=UTC)
+
+    window = mandate_charge_window(
+        frequency="monthly",
+        renews_at=renewal,
+        last_charge_at=datetime(2026, 8, 3, 8, tzinfo=UTC),
+        last_charge_status="APPROVED",
+        observed_at=now,
+    )
+
+    assert window.eligible is False
+    assert window.reason == "mandate_frequency_wait"
+    assert window.next_eligible_at == renewal
+
+
+def test_stale_renewal_anchor_advances_and_allows_a_new_cycle() -> None:
+    window = mandate_charge_window(
+        frequency="monthly",
+        renews_at=datetime(2026, 7, 2, 12, tzinfo=UTC),
+        last_charge_at=datetime(2026, 6, 10, 8, tzinfo=UTC),
+        last_charge_status="APPROVED",
+        observed_at=datetime(2026, 8, 20, 9, tzinfo=UTC),
+    )
+
+    assert window.eligible is True
+
+
+def test_legacy_synced_remaining_amount_blocks_without_local_last_charge() -> None:
+    renewal = datetime(2026, 9, 2, 12, tzinfo=UTC)
+    window = mandate_charge_window(
+        frequency="monthly",
+        renews_at=renewal,
+        last_charge_at=None,
+        last_charge_status=None,
+        approved_amount=Decimal("600"),
+        remaining_amount=Decimal("150"),
+        observed_at=datetime(2026, 8, 20, 9, tzinfo=UTC),
+    )
+
+    assert window.eligible is False
+    assert window.next_eligible_at == renewal
+
+
+def test_weekly_and_yearly_mandates_also_allow_only_one_charge_per_cycle() -> None:
+    cases = [
+        (
+            "weekly",
+            datetime(2026, 8, 9, 12, tzinfo=UTC),
+            datetime(2026, 8, 3, 8, tzinfo=UTC),
+            datetime(2026, 8, 5, 9, tzinfo=UTC),
+        ),
+        (
+            "yearly",
+            datetime(2027, 8, 2, 12, tzinfo=UTC),
+            datetime(2026, 8, 3, 8, tzinfo=UTC),
+            datetime(2026, 12, 1, 9, tzinfo=UTC),
+        ),
+    ]
+
+    for frequency, renewal, last_charge, now in cases:
+        window = mandate_charge_window(
+            frequency=frequency,
+            renews_at=renewal,
+            last_charge_at=last_charge,
+            last_charge_status="APPROVED",
+            observed_at=now,
+        )
+        assert window.eligible is False
+        assert window.next_eligible_at == renewal
 
 
 def test_catalog_tool_blocks_without_a_health_guard_profile_instead_of_returning_fake_offers() -> (

@@ -86,6 +86,10 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
 
   const supplies = useMemo(() => dashboard?.beneficiaries.flatMap((beneficiary) => beneficiary.supplies) ?? [], [dashboard]);
   const pendingMandateIds = useMemo(() => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "pending").map((item) => item.id) ?? [], [dashboard]);
+  const activeMandateKey = useMemo(
+    () => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "active").map((item) => item.id).sort().join(",") ?? "",
+    [dashboard],
+  );
 
   useEffect(() => {
     if (!session || !pendingMandateIds.length) return;
@@ -98,6 +102,19 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     const timer = window.setInterval(() => void syncPending(), 4000);
     return () => { stopped = true; window.clearInterval(timer); };
   }, [pendingMandateIds, refresh, session]);
+
+  useEffect(() => {
+    if (!session || !activeMandateKey) return;
+    const activeIds = activeMandateKey.split(",");
+    let stopped = false;
+    const syncActive = async () => {
+      await Promise.all(activeIds.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
+      if (!stopped) await refresh(session).catch(() => undefined);
+    };
+    void syncActive();
+    const timer = window.setInterval(() => void syncActive(), 60_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [activeMandateKey, refresh, session]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -163,6 +180,20 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     finally { setBusy(false); }
   }
 
+  async function updateStock(supplyId: string, quantityOnHand: number) {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try {
+      await api(`/setup/supplies/${supplyId}/stock-count`, session.access_token, {
+        method: "POST",
+        body: JSON.stringify({ quantity_on_hand: quantityOnHand }),
+      });
+      await refresh(session);
+      setNotice("Stock updated. The next automatic order time has been recalculated.");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not update stock"); }
+    finally { setBusy(false); }
+  }
+
   async function testPayment(supplyId: string, supplyName: string) {
     if (!session || !window.confirm(`Run one sandbox payment test for ${supplyName}? This will use its active Prava mandate.`)) return;
     setBusy(true); setNotice("");
@@ -217,7 +248,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     { page: "transactions", label: "Payment transactions", icon: "₹" },
     { page: "activity", label: "Activity", icon: "≡" },
   ];
-  const setup = page === "beneficiaries" || page === "supplies" || page === "merchants" ? <CareSetup view={page} dashboard={dashboard} automationTimings={automationTimings} busy={busy} onCreate={createSetup} onToggle={toggle} onRetryProductSetup={retryProductSetup} onDeleteSupply={deleteSupply} onSearchProducts={searchProducts} /> : null;
+  const setup = page === "beneficiaries" || page === "supplies" || page === "merchants" ? <CareSetup view={page} dashboard={dashboard} automationTimings={automationTimings} busy={busy} onCreate={createSetup} onToggle={toggle} onRetryProductSetup={retryProductSetup} onDeleteSupply={deleteSupply} onUpdateStock={updateStock} onSearchProducts={searchProducts} /> : null;
   const content = page === "dashboard"
     ? <><DashboardOverview dashboard={dashboard} transactions={transactions} /><TrustPanel events={events} supplies={supplies} busy={busy} onRunningLow={signalRunningLow} /><AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} /></>
     : page === "mandates"

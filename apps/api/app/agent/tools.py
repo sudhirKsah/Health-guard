@@ -7,6 +7,7 @@ from uuid import UUID
 
 from app.agent.policy import StockProjection, project_stock
 from app.integrations.ucp import UcpAdapter, UcpConfigurationError, UcpMerchantError
+from app.inventory import estimated_quantity
 from app.models import Supply
 
 
@@ -44,14 +45,9 @@ class InventoryTool:
         observed_at = supply.inventory_observed_at
         if observed_at.tzinfo is None:
             observed_at = observed_at.replace(tzinfo=UTC)
-        elapsed_days = Decimal(str(max(0.0, (now - observed_at).total_seconds()))) / Decimal(
-            "86400"
-        )
-        estimated_quantity = max(
-            Decimal("0"), supply.quantity_on_hand - supply.daily_consumption * elapsed_days
-        )
+        current_quantity = estimated_quantity(supply, at=now)
         projection = project_stock(
-            quantity_on_hand=estimated_quantity,
+            quantity_on_hand=current_quantity,
             daily_consumption=supply.daily_consumption,
             safety_buffer_quantity=supply.safety_buffer_quantity,
             observed_at=now,
@@ -61,7 +57,7 @@ class InventoryTool:
             summary={
                 "supply_id": str(supply.id),
                 "quantity_on_hand": str(supply.quantity_on_hand),
-                "estimated_quantity_now": str(estimated_quantity.quantize(Decimal('0.001'))),
+                "estimated_quantity_now": str(current_quantity),
                 "inventory_observed_at": observed_at.isoformat(),
                 "unit": supply.unit,
                 "daily_consumption": str(supply.daily_consumption),

@@ -13,6 +13,7 @@ from app.agent.sandbox_settlement import SandboxSettlementExecutor
 from app.agent.state import AgentState, validate_transition
 from app.agent.tools import CatalogSearchTool, ConfiguredVariant, InventoryTool
 from app.integrations.openai_brain import OpenAIBrain
+from app.mandate_cycles import MandateChargeWindow, mandate_charge_window
 from app.models import (
     AgentRun,
     AgentStep,
@@ -142,6 +143,27 @@ class ReplenishmentAgent:
                 for variant, authorization in configured_variants
             ],
         )
+        checked_at = datetime.now(UTC)
+        variants_by_identity = {
+            (
+                str(authorization.id),
+                variant.merchant_product_id,
+                variant.merchant_variant_id,
+            ): variant
+            for variant, authorization in configured_variants
+        }
+        for offer in live_offers:
+            configured_variant = variants_by_identity.get(
+                (
+                    str(offer.merchant_authorization_id),
+                    offer.merchant_product_id,
+                    offer.merchant_variant_id,
+                )
+            )
+            if configured_variant is not None:
+                configured_variant.latest_unit_price = offer.unit_price
+                configured_variant.latest_currency = offer.currency
+                configured_variant.price_checked_at = checked_at
         self._record_step(
             run,
             stage="discover",
@@ -175,6 +197,18 @@ class ReplenishmentAgent:
         sandbox_settlement = sandbox_executor.enabled(
             explicit_test=self.explicit_sandbox_test
         )
+        mandate_windows: dict[UUID, MandateChargeWindow] = {
+            authorization.id: mandate_charge_window(
+                frequency=authorization.mandate_frequency,
+                renews_at=authorization.mandate_renews_at,
+                last_charge_at=authorization.mandate_last_charge_at,
+                last_charge_status=authorization.mandate_last_charge_status,
+                approved_amount=authorization.mandate_approved_amount,
+                remaining_amount=authorization.mandate_remaining_amount,
+                observed_at=checked_at,
+            )
+            for _variant, authorization in configured_variants
+        }
         policy = choose_offer(
             offers=[
                 OfferCandidate(
@@ -202,6 +236,10 @@ class ReplenishmentAgent:
                     mandate_remaining_amount=authorization.mandate_remaining_amount,
                     health_guard_stop_after=authorization.health_guard_stop_after,
                     mandate_valid_until=authorization.mandate_valid_until,
+                    mandate_next_charge_at=mandate_windows[
+                        authorization.id
+                    ].next_eligible_at,
+                    mandate_charge_block_reason=mandate_windows[authorization.id].reason,
                 )
                 for variant, authorization in configured_variants
             ],
@@ -225,8 +263,8 @@ class ReplenishmentAgent:
             },
         )
         if policy.selected is not None:
-            selected_authorization = next(
-                authorization
+            selected_variant, selected_authorization = next(
+                (variant, authorization)
                 for variant, authorization in configured_variants
                 if str(authorization.id) == policy.selected.merchant_authorization_id
                 and variant.merchant_product_id == policy.selected.merchant_product_id
@@ -246,13 +284,21 @@ class ReplenishmentAgent:
                     and offer.merchant_variant_id == policy.selected.merchant_variant_id
                 ),
                 product_id=policy.selected.merchant_product_id,
+                pack_quantity=selected_variant.pack_quantity,
+                pack_unit=selected_variant.pack_unit,
                 explicit_test=self.explicit_sandbox_test,
             )
             self._record_step(
                 run,
                 stage="act",
                 tool_name="prava_sandbox_mandate_settlement",
-                status="success" if settlement.status == "sandbox_settled" else "blocked",
+                status=(
+                    "success"
+                    if settlement.status == "sandbox_settled"
+                    else "cancelled"
+                    if settlement.status == "cancelled"
+                    else "blocked"
+                ),
                 input_summary={
                     "merchant_authorization_id": str(selected_authorization.id),
                     "amount": f"{policy.selected.landed_price:.2f}",
@@ -260,6 +306,11 @@ class ReplenishmentAgent:
                 output_summary={
                     "status": settlement.status,
                     "failure_code": settlement.failure_code,
+                    "next_eligible_at": (
+                        settlement.next_eligible_at.isoformat()
+                        if settlement.next_eligible_at
+                        else None
+                    ),
                     "merchant_fulfillment": "not_available_in_sandbox_settlement",
                 },
             )
@@ -290,6 +341,46 @@ class ReplenishmentAgent:
                         "fulfillment order."
                     ),
                 )
+            if settlement.status == "cancelled":
+                reason = {
+                    "supply_deleted_or_paused": (
+                        "The recurring supply was paused or deleted before payment. No payment was attempted."
+                    ),
+                    "supply_no_longer_due": (
+                        "Another completed order already replenished this supply. No duplicate payment was attempted."
+                    ),
+                    "inventory_unit_changed": (
+                        "The supply unit changed before payment. No payment was attempted."
+                    ),
+                    "mandate_frequency_wait": (
+                        "This supply is ready to reorder, but the mandate has already been used "
+                        f"in its {selected_authorization.mandate_frequency} cycle. No payment was "
+                        "attempted. The next eligible payment time is "
+                        f"{settlement.next_eligible_at.isoformat() if settlement.next_eligible_at else 'being synchronized'}."
+                    ),
+                    "mandate_cycle_boundary_unknown": (
+                        "The mandate cycle boundary could not be verified, so Health Guard stopped "
+                        "before payment. No payment was attempted."
+                    ),
+                    "mandate_sync_unavailable": (
+                        "Health Guard could not verify the latest mandate cycle with Prava, so it "
+                        "stopped before payment. No payment was attempted."
+                    ),
+                    "mandate_not_active": (
+                        "The Prava mandate is not active. No payment was attempted."
+                    ),
+                }.get(
+                    settlement.failure_code or "",
+                    "The supply changed before payment. No payment was attempted.",
+                )
+                frequency_wait = settlement.failure_code == "mandate_frequency_wait"
+                return self._finish(
+                    run,
+                    state=AgentState.COMPLETE,
+                    status="completed",
+                    outcome="frequency_wait" if frequency_wait else "wait",
+                    explanation=reason,
+                )
             return self._finish(
                 run,
                 state=AgentState.BLOCKED,
@@ -298,6 +389,24 @@ class ReplenishmentAgent:
                 explanation=(
                     "A live exact offer met the policy, but the Prava sandbox settlement did not complete. "
                     "No merchant fulfillment outcome was recorded."
+                ),
+            )
+        if decision_reason == "mandate_frequency_wait":
+            next_eligible_at = min(
+                window.next_eligible_at
+                for window in mandate_windows.values()
+                if window.next_eligible_at is not None
+            )
+            supply.payment_deferred_until = next_eligible_at
+            return self._finish(
+                run,
+                state=AgentState.COMPLETE,
+                status="completed",
+                outcome="frequency_wait",
+                explanation=(
+                    f"{supply.name} is ready to reorder, but its mandate has already been used in "
+                    f"the current payment cycle. No payment was attempted. The next eligible "
+                    f"payment time is {next_eligible_at.isoformat()}."
                 ),
             )
         return self._finish(
@@ -353,15 +462,16 @@ class ReplenishmentAgent:
         explanation: str,
     ) -> tuple[AgentRun, bool]:
         self._transition(run, state)
-        explanation = self.brain.explain_replenishment_decision(
-            facts={
-                "outcome": outcome,
-                "final_state": state.value,
-                "days_until_stockout": str(run.days_until_stockout),
-                "deterministic_explanation": explanation,
-            },
-            fallback=explanation,
-        )
+        if outcome != "frequency_wait":
+            explanation = self.brain.explain_replenishment_decision(
+                facts={
+                    "outcome": outcome,
+                    "final_state": state.value,
+                    "days_until_stockout": str(run.days_until_stockout),
+                    "deterministic_explanation": explanation,
+                },
+                fallback=explanation,
+            )
         run.status = status
         run.outcome = outcome
         run.explanation = explanation
@@ -377,6 +487,7 @@ class ReplenishmentAgent:
             "sandbox_settled": "Payment approved",
             "blocked": "Reorder needs attention",
             "wait": "Reorder check completed",
+            "frequency_wait": "Payment waiting for mandate renewal",
         }.get(outcome, "Agent evaluation completed")
         self.db.add(
             LedgerEvent(

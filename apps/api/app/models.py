@@ -121,6 +121,7 @@ class Supply(Timestamped, Base):
     inventory_observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    payment_deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
     beneficiary: Mapped[Beneficiary] = relationship(back_populates="supplies")
@@ -130,6 +131,23 @@ class Supply(Timestamped, Base):
     agent_runs: Mapped[list[AgentRun]] = relationship(
         back_populates="supply", cascade="all, delete-orphan"
     )
+    stock_movements: Mapped[list[StockMovement]] = relationship(
+        back_populates="supply",
+        cascade="all, delete-orphan",
+        order_by="StockMovement.occurred_at.desc()",
+    )
+
+    @property
+    def estimated_quantity_on_hand(self) -> Decimal:
+        observed_at = self.inventory_observed_at
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=UTC)
+        elapsed_days = Decimal(
+            str(max(0.0, (datetime.now(UTC) - observed_at).total_seconds()))
+        ) / Decimal("86400")
+        return max(
+            Decimal("0"), self.quantity_on_hand - self.daily_consumption * elapsed_days
+        ).quantize(Decimal("0.001"))
 
     @property
     def next_order_at(self) -> datetime:
@@ -177,6 +195,8 @@ class MerchantAuthorization(Timestamped, Base):
     health_guard_stop_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mandate_valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mandate_renews_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mandate_last_charge_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mandate_last_charge_status: Mapped[str | None] = mapped_column(String(24))
     mandate_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     owner: Mapped[User] = relationship(back_populates="merchant_authorizations")
@@ -257,6 +277,9 @@ class ApprovedVariant(Timestamped, Base):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     pack_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     pack_unit: Mapped[str] = mapped_column(String(40), nullable=False)
+    latest_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    latest_currency: Mapped[str | None] = mapped_column(String(3))
+    price_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     equivalence_set: Mapped[ProductEquivalenceSet] = relationship(
         back_populates="approved_variants"
@@ -413,12 +436,46 @@ class PurchaseOrder(Timestamped, Base):
     charged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     checkout_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    purchased_quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 3))
+    purchased_unit: Mapped[str | None] = mapped_column(String(40))
 
     owner: Mapped[User] = relationship(back_populates="purchase_orders")
     agent_run: Mapped[AgentRun] = relationship(back_populates="purchase_order")
     merchant_authorization: Mapped[MerchantAuthorization] = relationship(
         back_populates="purchase_orders"
     )
+    stock_movement: Mapped[StockMovement | None] = relationship(
+        back_populates="purchase_order", uselist=False
+    )
+
+
+class StockMovement(Base):
+    """Append-only inventory evidence, including automatic purchases and manual counts."""
+
+    __tablename__ = "stock_movements"
+    __table_args__ = (
+        CheckConstraint("balance_after >= 0", name="stock_movement_balance_nonnegative"),
+        UniqueConstraint("purchase_order_id", name="stock_movement_purchase_order_unique"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    supply_id: Mapped[UUID] = mapped_column(
+        ForeignKey("supplies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    purchase_order_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("purchase_orders.id", ondelete="SET NULL"), index=True
+    )
+    movement_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity_delta: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    balance_after: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    unit: Mapped[str] = mapped_column(String(40), nullable=False)
+    note: Mapped[str] = mapped_column(String(500), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    supply: Mapped[Supply] = relationship(back_populates="stock_movements")
+    purchase_order: Mapped[PurchaseOrder | None] = relationship(back_populates="stock_movement")
 
 
 class LedgerEvent(Base):

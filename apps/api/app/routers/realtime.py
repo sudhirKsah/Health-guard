@@ -19,6 +19,7 @@ from app.models import (
     MerchantAuthorization,
     ProductEquivalenceSet,
     PurchaseOrder,
+    StockMovement,
     Supply,
     User,
 )
@@ -58,6 +59,12 @@ def owner_fingerprint(owner_id: UUID) -> str:
             ),
             db.scalar(
                 select(func.max(PurchaseOrder.updated_at)).where(PurchaseOrder.owner_id == owner_id)
+            ),
+            db.scalar(
+                select(func.max(StockMovement.occurred_at))
+                .join(StockMovement.supply)
+                .join(Supply.beneficiary)
+                .where(Beneficiary.owner_id == owner_id)
             ),
             db.scalar(
                 select(func.max(LedgerEvent.created_at)).where(LedgerEvent.owner_id == owner_id)

@@ -53,6 +53,8 @@ class ApprovedVariantPolicy:
     mandate_remaining_amount: Decimal | None = None
     health_guard_stop_after: datetime | None = None
     mandate_valid_until: datetime | None = None
+    mandate_next_charge_at: datetime | None = None
+    mandate_charge_block_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,12 @@ def choose_offer(
             rejected.append(RejectedOffer(offer, "health_guard_mandate_stop_reached"))
         elif approval.mandate_valid_until and approval.mandate_valid_until <= now:
             rejected.append(RejectedOffer(offer, "mandate_expired"))
+        elif (
+            approval.mandate_charge_block_reason == "mandate_cycle_boundary_unknown"
+        ):
+            rejected.append(RejectedOffer(offer, "mandate_cycle_boundary_unknown"))
+        elif approval.mandate_next_charge_at and approval.mandate_next_charge_at > now:
+            rejected.append(RejectedOffer(offer, "mandate_frequency_wait"))
         elif approval.mandate_approved_amount is None:
             rejected.append(RejectedOffer(offer, "mandate_cap_not_recorded"))
         elif offer.landed_price > approval.mandate_approved_amount:

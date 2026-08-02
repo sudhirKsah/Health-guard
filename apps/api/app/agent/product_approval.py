@@ -326,21 +326,26 @@ class ProductApprovalAgent:
             )
             if identity not in selected_identity:
                 self._db.delete(existing)
+        existing_by_identity = {
+            (
+                item.merchant_authorization_id,
+                item.merchant_product_id,
+                item.merchant_variant_id,
+            ): item
+            for item in equivalence_set.approved_variants
+        }
+        price_checked_at = datetime.now(UTC)
         for candidate in candidates:
             identity = (
                 candidate.authorization.id,
                 candidate.variant.product_id,
                 candidate.variant.variant_id,
             )
-            existing_identities = {
-                (
-                    item.merchant_authorization_id,
-                    item.merchant_product_id,
-                    item.merchant_variant_id,
-                )
-                for item in equivalence_set.approved_variants
-            }
-            if identity in existing_identities:
+            existing = existing_by_identity.get(identity)
+            if existing is not None:
+                existing.latest_unit_price = candidate.variant.unit_price
+                existing.latest_currency = candidate.variant.currency
+                existing.price_checked_at = price_checked_at
                 continue
             self._db.add(
                 ApprovedVariant(
@@ -358,6 +363,9 @@ class ProductApprovalAgent:
                     ),
                     pack_quantity=candidate.pack_quantity,
                     pack_unit=candidate.pack_unit,
+                    latest_unit_price=candidate.variant.unit_price,
+                    latest_currency=candidate.variant.currency,
+                    price_checked_at=price_checked_at,
                 )
             )
 

@@ -17,12 +17,14 @@ from app.agent.product_approval import (
 from app.auth import get_current_user
 from app.database import get_db_session
 from app.integrations.ucp import UcpAdapter, UcpConfigurationError, UcpMerchantError
+from app.inventory import rebase_inventory, record_stock_count
 from app.models import (
     ApprovedVariant,
     Beneficiary,
     LedgerEvent,
     MerchantAuthorization,
     ProductEquivalenceSet,
+    StockMovement,
     Supply,
     User,
 )
@@ -40,6 +42,8 @@ from app.schemas import (
     MerchantAuthorizationUpdate,
     ProductSuggestionOut,
     SetupDashboard,
+    StockCountRequest,
+    StockMovementOut,
     SupplyCreate,
     SupplyDashboard,
     SupplyOut,
@@ -66,8 +70,10 @@ def owned_beneficiary(db: Session, owner_id: UUID, beneficiary_id: UUID) -> Bene
     return beneficiary
 
 
-def owned_supply(db: Session, owner_id: UUID, supply_id: UUID) -> Supply:
-    supply = db.scalar(
+def owned_supply(
+    db: Session, owner_id: UUID, supply_id: UUID, *, for_update: bool = False
+) -> Supply:
+    statement = (
         select(Supply)
         .join(Supply.beneficiary)
         .where(
@@ -76,6 +82,9 @@ def owned_supply(db: Session, owner_id: UUID, supply_id: UUID) -> Supply:
             Supply.deleted_at.is_(None),
         )
     )
+    if for_update:
+        statement = statement.with_for_update()
+    supply = db.scalar(statement)
     if supply is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Supply not found")
     return supply
@@ -254,7 +263,8 @@ def dashboard(
             .options(
                 selectinload(Beneficiary.supplies)
                 .selectinload(Supply.equivalence_sets)
-                .selectinload(ProductEquivalenceSet.approved_variants)
+                .selectinload(ProductEquivalenceSet.approved_variants),
+                selectinload(Beneficiary.supplies).selectinload(Supply.stock_movements),
             )
             .order_by(Beneficiary.created_at)
         )
@@ -340,6 +350,18 @@ def create_supply(
     )
     supply = Supply(beneficiary_id=beneficiary_id, **values)
     db.add(supply)
+    db.flush()
+    db.add(
+        StockMovement(
+            supply_id=supply.id,
+            movement_type="initial_balance",
+            quantity_delta=supply.quantity_on_hand,
+            balance_after=supply.quantity_on_hand,
+            unit=supply.unit,
+            note="Initial stock recorded when the recurring supply was created.",
+            occurred_at=supply.inventory_observed_at or datetime.now(UTC),
+        )
+    )
     db.commit()
     db.refresh(supply)
     background_tasks.add_task(auto_configure_supply_background, user.id, supply.id)
@@ -354,7 +376,7 @@ def update_supply(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> SupplyOut:
-    supply = owned_supply(db, user.id, supply_id)
+    supply = owned_supply(db, user.id, supply_id, for_update=True)
     updates = payload.model_dump(exclude_unset=True)
     if updates.get("is_enabled") is True and (
         supply.setup_status != "ready"
@@ -394,7 +416,15 @@ def update_supply(
     if {"quantity_on_hand", "daily_consumption", "safety_buffer_quantity"}.intersection(
         updates
     ):
-        supply.inventory_observed_at = datetime.now(UTC)
+        if "quantity_on_hand" in updates:
+            record_stock_count(
+                db,
+                supply=supply,
+                quantity_on_hand=updates["quantity_on_hand"],
+                note="Stock count updated from the recurring supply settings.",
+            )
+        else:
+            rebase_inventory(supply)
     for field, value in updates.items():
         setattr(supply, field, value.strip() if isinstance(value, str) else value)
     db.commit()
@@ -404,13 +434,46 @@ def update_supply(
     return SupplyOut.model_validate(supply)
 
 
+@router.post("/supplies/{supply_id}/stock-count", response_model=StockMovementOut)
+def update_stock_count(
+    supply_id: UUID,
+    payload: StockCountRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db_session),
+) -> StockMovementOut:
+    supply = owned_supply(db, user.id, supply_id, for_update=True)
+    movement = record_stock_count(
+        db,
+        supply=supply,
+        quantity_on_hand=payload.quantity_on_hand,
+        note="Current stock confirmed by the user.",
+    )
+    db.add(
+        LedgerEvent(
+            owner_id=user.id,
+            event_type="stock_count_updated",
+            title=f"{supply.name} stock updated",
+            detail=f"Current stock was set to {movement.balance_after} {supply.unit}(s).",
+            severity="info",
+            supply_id=supply.id,
+            metadata_safe={
+                "balance_after": str(movement.balance_after),
+                "unit": supply.unit,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(movement)
+    return StockMovementOut.model_validate(movement)
+
+
 @router.delete("/supplies/{supply_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_supply(
     supply_id: UUID,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> Response:
-    supply = owned_supply(db, user.id, supply_id)
+    supply = owned_supply(db, user.id, supply_id, for_update=True)
     supply.deleted_at = datetime.now(UTC)
     supply.is_enabled = False
     db.add(
@@ -491,7 +554,7 @@ def retry_automatic_product_setup(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
 ) -> SupplyOut:
-    supply = owned_supply(db, user.id, supply_id)
+    supply = owned_supply(db, user.id, supply_id, for_update=True)
     supply.setup_status = "discovering"
     supply.setup_message = (
         "Checking approved merchants for your specific product…"

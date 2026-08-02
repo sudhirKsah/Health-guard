@@ -36,9 +36,14 @@ def transaction_copy(
             if order.merchant_order_id
             else " Payment approval is recorded; merchant fulfillment is not recorded by this sandbox flow."
         )
+        inventory = (
+            f" {order.purchased_quantity} {order.purchased_unit}(s) were added to tracked stock."
+            if order.purchased_quantity is not None and order.purchased_unit
+            else ""
+        )
         return (
             "Payment approved",
-            f"{supply.name} for {beneficiary.name} was approved at {merchant.merchant_name} for {money}.{fulfillment}",
+            f"{supply.name} for {beneficiary.name} was approved at {merchant.merchant_name} for {money}.{fulfillment}{inventory}",
         )
     if status_value == "declined":
         reason = {
@@ -71,6 +76,7 @@ def list_transactions(
             PurchaseOrder.merchant_authorization_id == MerchantAuthorization.id,
         )
         .where(PurchaseOrder.owner_id == user.id)
+        .where(PurchaseOrder.status != "cancelled")
         .order_by(PurchaseOrder.created_at.desc())
         .limit(100)
     )

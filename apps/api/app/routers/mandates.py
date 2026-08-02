@@ -19,7 +19,14 @@ from app.integrations.prava import (
     parse_prava_amount,
     parse_prava_timestamp,
 )
-from app.models import MandateEvent, MerchantAuthorization, User
+from app.models import (
+    ApprovedVariant,
+    MandateEvent,
+    MerchantAuthorization,
+    ProductEquivalenceSet,
+    Supply,
+    User,
+)
 from app.routers.setup import MERCHANTS, owned_merchant_authorization
 from app.schemas import (
     MandateActionRequest,
@@ -112,6 +119,19 @@ def apply_mandate(
     authorization.mandate_renews_at = parse_prava_timestamp(
         mandate_value(mandate, "renewsAt", "renews_at")
     )
+    last_charge = mandate_value(mandate, "lastCharge", "last_charge")
+    if isinstance(last_charge, dict):
+        last_charge_status = last_charge.get("status")
+        remote_charge_at = parse_prava_timestamp(last_charge.get("at"))
+        local_charge_at = authorization.mandate_last_charge_at
+        if (
+            remote_charge_at is not None
+            and (local_charge_at is None or remote_charge_at >= local_charge_at)
+        ):
+            authorization.mandate_last_charge_status = (
+                last_charge_status if isinstance(last_charge_status, str) else None
+            )
+            authorization.mandate_last_charge_at = remote_charge_at
     authorization.mandate_synced_at = datetime.now(UTC)
     return previous_status, returned_status
 
@@ -203,7 +223,17 @@ def create_setup_session(
     authorization.mandate_max_charges = max_charges
     authorization.health_guard_stop_after = valid_until
     authorization.mandate_renews_at = None
+    authorization.mandate_last_charge_at = None
+    authorization.mandate_last_charge_status = None
     authorization.mandate_synced_at = now
+    for supply in db.scalars(
+        select(Supply)
+        .join(Supply.equivalence_sets)
+        .join(ProductEquivalenceSet.approved_variants)
+        .where(ApprovedVariant.merchant_authorization_id == authorization.id)
+        .distinct()
+    ):
+        supply.payment_deferred_until = None
     add_event(
         db,
         authorization,

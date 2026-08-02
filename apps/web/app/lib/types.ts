@@ -9,9 +9,23 @@ export type Variant = {
   display_name: string;
   pack_quantity: string;
   pack_unit: string;
+  latest_unit_price: string | null;
+  latest_currency: string | null;
+  price_checked_at: string | null;
 };
 
 export type EquivalenceSet = { id: string; name: string; notes: string | null; approved_variants: Variant[] };
+
+export type StockMovement = {
+  id: string;
+  purchase_order_id: string | null;
+  movement_type: "initial_balance" | "automatic_purchase" | "manual_count" | string;
+  quantity_delta: string;
+  balance_after: string;
+  unit: string;
+  note: string;
+  occurred_at: string;
+};
 
 export type Supply = {
   id: string;
@@ -28,9 +42,12 @@ export type Supply = {
   agent_summary: string | null;
   configured_at: string | null;
   inventory_observed_at: string;
+  payment_deferred_until: string | null;
+  estimated_quantity_on_hand: string;
   next_order_at: string;
   order_due: boolean;
   equivalence_sets: EquivalenceSet[];
+  stock_movements: StockMovement[];
 };
 
 export type Beneficiary = {
@@ -58,6 +75,8 @@ export type MerchantAuthorization = {
   health_guard_stop_after: string | null;
   mandate_valid_until: string | null;
   mandate_renews_at: string | null;
+  mandate_last_charge_at: string | null;
+  mandate_last_charge_status: string | null;
   mandate_synced_at: string | null;
 };
 
@@ -70,6 +89,14 @@ export type SupplyAutomationTiming = {
   reorder_threshold_at: string;
   next_automatic_check_at: string | null;
   state: "scheduled" | "paused" | "setup_required" | "scheduler_off" | string;
+  chargeable_price: string | null;
+  chargeable_currency: string | null;
+  price_checked_at: string | null;
+  merchant_name: string | null;
+  mandate_frequency: string | null;
+  next_payment_eligible_at: string | null;
+  payment_eligibility_state: "eligible" | "frequency_wait" | "cycle_sync_required" | "mandate_missing" | "mandate_inactive" | string;
+  payment_eligibility_message: string;
 };
 
 export type ProductSuggestion = {

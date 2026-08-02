@@ -14,6 +14,7 @@ type Props = {
   onToggle: (path: string, body: object) => void;
   onRetryProductSetup: (supplyId: string) => void;
   onDeleteSupply: (supplyId: string, supplyName: string) => void;
+  onUpdateStock: (supplyId: string, quantityOnHand: number) => void;
   onSearchProducts: (query: string) => Promise<ProductSuggestion[]>;
 };
 
@@ -65,7 +66,7 @@ function MerchantsPanel({ dashboard, busy, onCreate, onToggle }: Props) {
   );
 }
 
-function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle, onRetryProductSetup, onDeleteSupply, onSearchProducts }: Props) {
+function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle, onRetryProductSetup, onDeleteSupply, onUpdateStock, onSearchProducts }: Props) {
   const supplies = dashboard.beneficiaries.flatMap((beneficiary) => beneficiary.supplies.map((supply) => ({ supply, beneficiary })));
   const timings = new Map(automationTimings.map((timing) => [timing.supply_id, timing]));
   const [supplyName, setSupplyName] = useState("");
@@ -164,7 +165,7 @@ function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle,
           <button disabled={busy}>Add recurring supply</button>
         </form>}
       </section>
-      <section className="card stack supply-overview"><h2>Your recurring supplies</h2>{!supplies.length && <p className="empty-state">Your supplies will appear here.</p>}{supplies.map(({ supply, beneficiary }) => <SupplyCard key={supply.id} supply={supply} timing={timings.get(supply.id)} beneficiaryName={beneficiary.name} busy={busy} onToggle={onToggle} onRetry={onRetryProductSetup} onDelete={onDeleteSupply} />)}</section>
+      <section className="card stack supply-overview"><h2>Your recurring supplies</h2>{!supplies.length && <p className="empty-state">Your supplies will appear here.</p>}{supplies.map(({ supply, beneficiary }) => <SupplyCard key={supply.id} supply={supply} timing={timings.get(supply.id)} beneficiaryName={beneficiary.name} busy={busy} onToggle={onToggle} onRetry={onRetryProductSetup} onDelete={onDeleteSupply} onUpdateStock={onUpdateStock} />)}</section>
     </div>
   );
 }
@@ -209,9 +210,33 @@ function Countdown({ value }: { value: string }) {
   return <span className="countdown">in {label}</span>;
 }
 
-function SupplyCard({ supply, timing, beneficiaryName, busy, onToggle, onRetry, onDelete }: { supply: Supply; timing: SupplyAutomationTiming | undefined; beneficiaryName: string; busy: boolean; onToggle: Props["onToggle"]; onRetry: Props["onRetryProductSetup"]; onDelete: Props["onDeleteSupply"] }) {
+function SupplyCard({ supply, timing, beneficiaryName, busy, onToggle, onRetry, onDelete, onUpdateStock }: { supply: Supply; timing: SupplyAutomationTiming | undefined; beneficiaryName: string; busy: boolean; onToggle: Props["onToggle"]; onRetry: Props["onRetryProductSetup"]; onDelete: Props["onDeleteSupply"]; onUpdateStock: Props["onUpdateStock"] }) {
   const ready = supply.setup_status === "ready";
+  const frequencyWaiting = timing?.payment_eligibility_state === "frequency_wait";
   const label = ready ? "Ready" : supply.setup_status === "discovering" ? "Checking product" : supply.setup_status === "needs_attention" ? "Needs attention" : "Waiting for merchant";
+  const purchasedTotal = supply.stock_movements.filter((item) => item.movement_type === "automatic_purchase").reduce((total, item) => total + Number(item.quantity_delta), 0);
   const timingText = timing?.state === "paused" ? "Paused" : timing?.state === "scheduler_off" ? "Automatic scheduler is off" : timing?.state === "setup_required" ? "Product setup must finish first" : timing?.next_automatic_check_at ? formatDateTime(timing.next_automatic_check_at) : "Synchronizing schedule…";
-  return <article className="supply-card"><header><div><strong>{supply.name}</strong><small>For {beneficiaryName}</small></div><span className={`status-pill ${ready ? "approved" : supply.setup_status}`}>{label}</span></header><p>{supply.setup_message}</p>{supply.agent_summary && <p className="agent-note">{supply.agent_summary}</p>}<div className="supply-stats"><span><b>{supply.quantity_on_hand}</b> {supply.unit}s on hand</span><span><b>{supply.daily_consumption}</b> used each day</span><span>Reorder at <b>{supply.safety_buffer_quantity}</b></span></div>{ready && <div className={`next-order ${supply.order_due ? "due" : ""}`}><div><span>Next automatic payment check</span><strong>{timingText}</strong>{timing?.next_automatic_check_at && <Countdown value={timing.next_automatic_check_at} />}</div><small>{supply.order_due ? "Reorder level reached" : `Reorder level expected ${formatDateTime(supply.next_order_at)}`}</small><p>A purchase is attempted at this check only if the product, mandate, availability, and spending rules still pass.</p></div>}<div className="card-actions">{ready && <button className="quiet" disabled={busy} onClick={() => onToggle(`/setup/supplies/${supply.id}`, { is_enabled: !supply.is_enabled })}>{supply.is_enabled ? "Pause automatic orders" : "Resume automatic orders"}</button>}{supply.setup_status === "needs_attention" && (supply.product_requirements || supply.preferred_pack_quantity) && <button className="quiet" disabled={busy} onClick={() => onToggle(`/setup/supplies/${supply.id}`, { product_requirements: null, preferred_pack_quantity: null })}>Let Health Guard choose</button>}{supply.setup_status === "needs_attention" && <button className="quiet" disabled={busy} onClick={() => onRetry(supply.id)}>Try product check again</button>}<button className="danger-outline" disabled={busy} onClick={() => onDelete(supply.id, supply.name)}>Delete supply</button></div></article>;
+  return <article className="supply-card">
+    <header><div><strong>{supply.name}</strong><small>For {beneficiaryName}</small></div><span className={`status-pill ${ready ? "approved" : supply.setup_status}`}>{label}</span></header>
+    <p>{supply.setup_message}</p>
+    {supply.agent_summary && <p className="agent-note">{supply.agent_summary}</p>}
+    <div className="supply-stats"><span><b>{supply.estimated_quantity_on_hand}</b> estimated {supply.unit}s on hand</span><span><b>{supply.daily_consumption}</b> used each day</span><span>Reorder at <b>{supply.safety_buffer_quantity}</b></span>{purchasedTotal > 0 && <span><b>+{purchasedTotal}</b> added by orders</span>}</div>
+    {ready && <div className={`payment-readiness ${frequencyWaiting ? "waiting" : ""}`}>
+      <div className="chargeable-price"><small>Current chargeable price</small><strong>{timing?.chargeable_price && timing.chargeable_currency ? formatMoney(timing.chargeable_price, timing.chargeable_currency) : "Price is being verified"}</strong><span>{timing?.merchant_name ?? "Approved merchant"}{timing?.price_checked_at ? ` · checked ${formatDateTime(timing.price_checked_at)}` : ""}</span></div>
+      <div className="mandate-readiness"><small>Payment permission</small><strong>{timing?.mandate_frequency ? `Once ${timing.mandate_frequency === "weekly" ? "a week" : timing.mandate_frequency === "monthly" ? "a month" : "a year"}` : "Mandate not ready"}</strong><span>{timing?.payment_eligibility_message ?? "Checking mandate status…"}</span></div>
+      {frequencyWaiting && timing?.next_payment_eligible_at && <div className="frequency-wait-notice"><strong>No payment will be attempted yet</strong><span>Next eligible: {formatDateTime(timing.next_payment_eligible_at)}</span><Countdown value={timing.next_payment_eligible_at} /></div>}
+    </div>}
+    <details className="stock-manager">
+      <summary><span>Stock management</span><small>Counts and automatic purchases</small></summary>
+      <div className="stock-manager-body">
+        <form className="stock-count-form" onSubmit={(event) => { event.preventDefault(); const quantity = Number(formValue(event.currentTarget, "stockCount")); if (Number.isFinite(quantity) && quantity >= 0) onUpdateStock(supply.id, quantity); }}>
+          <label>Current physical stock<small>Use this when you count what is actually available.</small><input key={supply.inventory_observed_at} name="stockCount" type="number" min="0" step="0.001" defaultValue={supply.estimated_quantity_on_hand} required /></label>
+          <button className="quiet" disabled={busy}>Update stock</button>
+        </form>
+        <div className="stock-history"><strong>Recent stock history</strong>{!supply.stock_movements.length && <small>No stock changes recorded yet.</small>}{supply.stock_movements.slice(0, 5).map((movement) => <div className="stock-movement" key={movement.id}><span className={Number(movement.quantity_delta) >= 0 ? "stock-in" : "stock-out"}>{Number(movement.quantity_delta) >= 0 ? "+" : ""}{movement.quantity_delta} {movement.unit}s</span><span><b>{movement.movement_type === "automatic_purchase" ? "Automatic purchase" : movement.movement_type === "initial_balance" ? "Starting stock" : "Stock count"}</b><small>{formatDateTime(movement.occurred_at)} · balance {movement.balance_after}</small></span></div>)}</div>
+      </div>
+    </details>
+    {ready && <div className={`next-order ${supply.order_due ? "due" : ""}`}><div><span>Next automatic payment check</span><strong>{timingText}</strong>{timing?.next_automatic_check_at && <Countdown value={timing.next_automatic_check_at} />}</div><small>{frequencyWaiting ? "Waiting for mandate renewal" : supply.order_due ? "Reorder level reached" : `Reorder level expected ${formatDateTime(supply.next_order_at)}`}</small><p>{frequencyWaiting ? "The product needs replenishment, but Health Guard will wait for the next mandate cycle instead of sending a payment that Prava would decline." : "A purchase is attempted at this check only if the product, mandate, availability, and spending rules still pass."}</p></div>}
+    <div className="card-actions">{ready && <button className="quiet" disabled={busy} onClick={() => onToggle(`/setup/supplies/${supply.id}`, { is_enabled: !supply.is_enabled })}>{supply.is_enabled ? "Pause automatic orders" : "Resume automatic orders"}</button>}{supply.setup_status === "needs_attention" && (supply.product_requirements || supply.preferred_pack_quantity) && <button className="quiet" disabled={busy} onClick={() => onToggle(`/setup/supplies/${supply.id}`, { product_requirements: null, preferred_pack_quantity: null })}>Let Health Guard choose</button>}{supply.setup_status === "needs_attention" && <button className="quiet" disabled={busy} onClick={() => onRetry(supply.id)}>Try product check again</button>}<button className="danger-outline" disabled={busy} onClick={() => onDelete(supply.id, supply.name)}>Delete supply</button></div>
+  </article>;
 }

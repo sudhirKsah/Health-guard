@@ -1,10 +1,97 @@
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from app.agent.sandbox_settlement import SandboxSettlementExecutor
 from app.config import Settings
 from app.integrations.prava import PravaClient
+from app.models import (
+    AgentRun,
+    LedgerEvent,
+    MerchantAuthorization,
+    PurchaseOrder,
+    StockMovement,
+    Supply,
+)
+
+
+class FakeSettlementDb:
+    def __init__(self, scalar_results: list[object | None]) -> None:
+        self.scalar_results = scalar_results
+        self.added: list[object] = []
+        self.commits = 0
+
+    def scalar(self, _statement: object) -> object | None:
+        return self.scalar_results.pop(0)
+
+    def add(self, item: object) -> None:
+        if isinstance(item, PurchaseOrder) and item.id is None:
+            item.id = uuid4()
+        self.added.append(item)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
+class FakeSettlementPrava:
+    def __init__(self, *, last_charge_at: datetime | None = None) -> None:
+        self.charge_calls = 0
+        self.last_charge_at = last_charge_at
+
+    def list_standing_mandates(self, **_kwargs: object) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "mdt_stock",
+                "status": "active",
+                "approvedAmount": "600.00",
+                "remaining": "600.00",
+                "currency": "INR",
+                "recurringFrequency": "monthly",
+                "renewsAt": (datetime.now(UTC) + timedelta(days=10)).isoformat(),
+                "lastCharge": (
+                    {"status": "APPROVED", "at": self.last_charge_at.isoformat()}
+                    if self.last_charge_at
+                    else None
+                ),
+            }
+        ]
+
+    def charge_mandate(self, **_kwargs: object) -> object:
+        self.charge_calls += 1
+        return SimpleNamespace(
+            status="awaiting_result",
+            transaction_id="txn_stock",
+            order_id="ord_stock",
+            error_code=None,
+        )
+
+    def report_mandate_charge(self, **_kwargs: object) -> object:
+        return SimpleNamespace(status="completed", visa_confirmation="SUCCESS")
+
+
+def settlement_entities() -> tuple[AgentRun, MerchantAuthorization, Supply]:
+    supply = Supply(
+        id=uuid4(),
+        name="Ashwagandha",
+        unit="tablet",
+        daily_consumption=Decimal("1"),
+        quantity_on_hand=Decimal("5"),
+        safety_buffer_quantity=Decimal("7"),
+        inventory_observed_at=datetime.now(UTC),
+        is_enabled=True,
+    )
+    run = AgentRun(id=uuid4(), owner_id=uuid4(), supply_id=supply.id)
+    authorization = MerchantAuthorization(
+        id=uuid4(),
+        merchant_name="Himalaya Wellness",
+        merchant_domain="himalayawellness.in",
+        prava_mandate_id="mdt_stock",
+        mandate_currency="INR",
+    )
+    return run, authorization, supply
 
 
 def client_with_response(response: dict[str, object]) -> tuple[PravaClient, dict[str, object]]:
@@ -125,3 +212,116 @@ def test_explicit_payment_test_is_allowed_only_against_prava_sandbox() -> None:
     assert sandbox.enabled() is False
     assert sandbox.enabled(explicit_test=True) is True
     assert production.enabled(explicit_test=True) is False
+
+
+def test_deleted_supply_is_cancelled_at_the_final_gate_before_prava_charge() -> None:
+    run, authorization, _supply = settlement_entities()
+    db = FakeSettlementDb([None, authorization, None])
+    prava = FakeSettlementPrava()
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+    )
+
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+
+    assert result.status == "cancelled"
+    assert result.failure_code == "supply_deleted_or_paused"
+    assert prava.charge_calls == 0
+
+
+def test_approved_purchase_adds_pack_to_stock_exactly_once() -> None:
+    run, authorization, supply = settlement_entities()
+    db = FakeSettlementDb([None, authorization, supply, None])
+    prava = FakeSettlementPrava()
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+    )
+
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+
+    order = next(item for item in db.added if isinstance(item, PurchaseOrder))
+    movement = next(item for item in db.added if isinstance(item, StockMovement))
+    assert result.status == "sandbox_settled"
+    assert prava.charge_calls == 1
+    assert supply.quantity_on_hand == Decimal("65.000")
+    assert order.purchased_quantity == Decimal("60.000")
+    assert movement.quantity_delta == Decimal("60.000")
+    assert movement.balance_after == Decimal("65.000")
+    assert any(isinstance(item, LedgerEvent) for item in db.added)
+
+
+def test_concurrent_run_is_cancelled_after_first_order_replenishes_stock() -> None:
+    run, authorization, supply = settlement_entities()
+    supply.quantity_on_hand = Decimal("65")
+    db = FakeSettlementDb([None, authorization, supply])
+    prava = FakeSettlementPrava()
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+    )
+
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+
+    assert result.status == "cancelled"
+    assert result.failure_code == "supply_no_longer_due"
+    assert prava.charge_calls == 0
+
+
+def test_second_charge_in_same_mandate_cycle_is_stopped_before_prava_charge() -> None:
+    run, authorization, supply = settlement_entities()
+    db = FakeSettlementDb([None, authorization, supply])
+    prava = FakeSettlementPrava(last_charge_at=datetime.now(UTC) - timedelta(hours=1))
+    executor = SandboxSettlementExecutor(
+        db,  # type: ignore[arg-type]
+        settings=Settings(prava_api_base_url="https://sandbox.api.prava.space"),
+        prava=prava,  # type: ignore[arg-type]
+    )
+
+    result = executor.execute(
+        run=run,
+        authorization=authorization,
+        amount=Decimal("450"),
+        product_description="Ashwagandha",
+        product_id="product-1",
+        pack_quantity=Decimal("60"),
+        pack_unit="tablet",
+        explicit_test=True,
+    )
+
+    assert result.status == "cancelled"
+    assert result.failure_code == "mandate_frequency_wait"
+    assert result.next_eligible_at is not None
+    assert supply.payment_deferred_until == result.next_eligible_at
+    assert prava.charge_calls == 0
