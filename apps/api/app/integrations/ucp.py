@@ -159,12 +159,20 @@ class UcpAdapter:
         }
         try:
             response = httpx.post(
-                endpoint, json=payload, headers={"Content-Type": "application/json"}, timeout=25
+                endpoint,
+                json=payload,
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                },
+                timeout=25,
             )
             response.raise_for_status()
             payload_out = response.json()
         except (httpx.HTTPError, ValueError) as error:
             raise UcpMerchantError("merchant_ucp_unavailable") from error
+        if not isinstance(payload_out, dict):
+            raise UcpMerchantError("merchant_ucp_invalid_response")
         if "error" in payload_out:
             raise UcpMerchantError("merchant_ucp_tool_error")
         result = payload_out.get("result")
@@ -173,7 +181,10 @@ class UcpAdapter:
         content = result.get("structuredContent")
         if isinstance(content, dict):
             return content
-        for item in result.get("content", []):
+        raw_content = result.get("content", [])
+        if not isinstance(raw_content, list):
+            raise UcpMerchantError("merchant_ucp_invalid_response")
+        for item in raw_content:
             if (
                 isinstance(item, dict)
                 and item.get("type") == "text"

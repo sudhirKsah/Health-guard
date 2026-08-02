@@ -54,9 +54,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db_session)) -> Sessi
     return issue_session(db, user)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def logout(
-    response: Response,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db_session),
     authorization: Annotated[str | None, Header()] = None,
@@ -72,7 +71,9 @@ def logout(
         if db_token is not None:
             db_token.revoked_at = datetime.now(UTC)
             db.commit()
-    return response
+    # Do not return FastAPI's injected Response object: it has no concrete status code until
+    # FastAPI builds the final response. Returning it directly makes Uvicorn receive None.
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/me", response_model=UserOut)

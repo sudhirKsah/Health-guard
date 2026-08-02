@@ -3,7 +3,9 @@ app/__init__.py
 app/auth.py
 app/config.py
 app/database.py
+app/inventory.py
 app/main.py
+app/mandate_cycles.py
 app/models.py
 app/scheduler.py
 app/schemas.py
@@ -38,6 +40,7 @@ tests/test_auth.py
 tests/test_config.py
 tests/test_health.py
 tests/test_prava_mandate_charge.py
+tests/test_product_approval.py
 tests/test_scheduler.py
 tests/test_schemas.py
 tests/test_security.py

@@ -115,9 +115,18 @@ class CatalogSearchTool:
                         for configured in configured_for_merchant
                     )
                 }
+                # Search results can contain partial variant information. Persist offers only from
+                # the product lookup refresh, where available, rather than treating the lookup as
+                # a no-op.
+                live_by_identity = {
+                    (item.product_id, item.variant_id): item for item in live_variants
+                }
                 for product_id in product_ids:
-                    self._ucp.get_product(merchant_key=merchant_key, product_id=product_id)
-                for live in live_variants:
+                    for refreshed in self._ucp.get_product(
+                        merchant_key=merchant_key, product_id=product_id
+                    ):
+                        live_by_identity[(refreshed.product_id, refreshed.variant_id)] = refreshed
+                for live in live_by_identity.values():
                     for configured in configured_for_merchant:
                         if (
                             live.product_id == configured.merchant_product_id

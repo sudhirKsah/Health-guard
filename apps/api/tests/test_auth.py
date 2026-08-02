@@ -2,6 +2,16 @@ import httpx
 
 from app.auth import hash_password, is_valid_prava_email, verify_password
 from app.integrations.prava import PravaClient
+from app.models import User
+from app.routers.auth import logout
+
+
+class FakeLogoutDb:
+    def scalar(self, _statement: object) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
 
 
 def test_scrypt_password_hash_is_not_the_password_and_verifies() -> None:
@@ -34,3 +44,13 @@ def test_prava_error_sanitizer_keeps_only_validation_field_names() -> None:
     )
 
     assert PravaClient._safe_error_context(response) == ("VAL_2001", ["mandate_setup.valid_until"])
+
+
+def test_logout_returns_a_concrete_no_content_response() -> None:
+    response = logout(
+        user=User(email="caregiver@example.com", password_hash="not-used"),
+        db=FakeLogoutDb(),  # type: ignore[arg-type]
+        authorization="Bearer session-token",
+    )
+
+    assert response.status_code == 204

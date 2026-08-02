@@ -19,11 +19,10 @@ import type { WorkspacePage } from "./workspace-page";
 const sessionKey = "health-guard-session";
 
 export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading: { eyebrow: string; title: string; subtitle: string } }) {
-  const [session, setSession] = useState<Session | null>(() => {
-    if (typeof window === "undefined") return null;
-    const raw = window.sessionStorage.getItem(sessionKey);
-    return raw ? (JSON.parse(raw) as Session) : null;
-  });
+  // Keep the server's first render and the browser's hydration render identical. The stored
+  // session is restored only after hydration, rather than being read during useState initialization.
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionRestored, setSessionRestored] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [events, setEvents] = useState<LedgerEvent[]>([]);
@@ -33,6 +32,20 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const refreshTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    const restoreSession = window.setTimeout(() => {
+      try {
+        const raw = window.sessionStorage.getItem(sessionKey);
+        setSession(raw ? (JSON.parse(raw) as Session) : null);
+      } catch {
+        window.sessionStorage.removeItem(sessionKey);
+      } finally {
+        setSessionRestored(true);
+      }
+    }, 0);
+    return () => window.clearTimeout(restoreSession);
+  }, []);
 
   const refresh = useCallback(async (activeSession: Session) => {
     const [nextDashboard, nextRuns, nextEvents, nextTransactions, nextAutomationTimings] = await Promise.all([
@@ -85,36 +98,53 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   }, [endSession, refresh, session]);
 
   const supplies = useMemo(() => dashboard?.beneficiaries.flatMap((beneficiary) => beneficiary.supplies) ?? [], [dashboard]);
-  const pendingMandateIds = useMemo(() => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "pending").map((item) => item.id) ?? [], [dashboard]);
+  const pendingMandateKey = useMemo(
+    () => dashboard?.merchant_authorizations
+      .filter((item) => item.mandate_status === "pending")
+      .map((item) => item.id)
+      .sort()
+      .join(",") ?? "",
+    [dashboard],
+  );
   const activeMandateKey = useMemo(
     () => dashboard?.merchant_authorizations.filter((item) => item.mandate_status === "active").map((item) => item.id).sort().join(",") ?? "",
     [dashboard],
   );
 
   useEffect(() => {
-    if (!session || !pendingMandateIds.length) return;
+    if (!session || !pendingMandateKey) return;
+    const pendingMandateIds = pendingMandateKey.split(",");
     let stopped = false;
+    let syncing = false;
     const syncPending = async () => {
-      await Promise.all(pendingMandateIds.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
-      if (!stopped) await refresh(session).catch(() => undefined);
+      if (syncing || stopped) return;
+      syncing = true;
+      try {
+        await Promise.all(pendingMandateIds.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
+        // The authenticated SSE stream refreshes the dashboard after the sync changes a mandate.
+        // Calling refresh here as well created a feedback loop of five additional requests.
+      } finally {
+        syncing = false;
+      }
     };
     void syncPending();
-    const timer = window.setInterval(() => void syncPending(), 4000);
+    const timer = window.setInterval(() => void syncPending(), 10_000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [pendingMandateIds, refresh, session]);
+  }, [pendingMandateKey, session]);
 
   useEffect(() => {
     if (!session || !activeMandateKey) return;
     const activeIds = activeMandateKey.split(",");
     let stopped = false;
     const syncActive = async () => {
+      if (stopped) return;
       await Promise.all(activeIds.map((id) => api(`/mandates/${id}/sync`, session.access_token, { method: "POST" }).catch(() => undefined)));
-      if (!stopped) await refresh(session).catch(() => undefined);
+      // The SSE stream delivers the resulting dashboard refresh.
     };
     void syncActive();
-    const timer = window.setInterval(() => void syncActive(), 60_000);
+    const timer = window.setInterval(() => void syncActive(), 5 * 60_000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [activeMandateKey, refresh, session]);
+  }, [activeMandateKey, session]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -231,10 +261,16 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   }, [session]);
 
   async function signOut() {
-    if (session) await api<void>("/auth/logout", session.access_token, { method: "POST" }).catch(() => undefined);
+    const activeSession = session;
+    // Clear the browser session immediately. This closes the realtime stream and prevents the
+    // workspace from issuing further authenticated refreshes while logout is in flight.
     endSession();
+    if (activeSession) {
+      await api<void>("/auth/logout", activeSession.access_token, { method: "POST" }).catch(() => undefined);
+    }
   }
 
+  if (!sessionRestored) return <main className="auth-shell"><p className="muted">Loading Health Guard…</p></main>;
   if (!session) return <AuthPanel mode={mode} busy={busy} notice={notice} onModeChange={setMode} onSubmit={submitAuth} />;
   if (!dashboard) return <main className="auth-shell"><p className="muted">Loading your care information…</p>{notice && <p className="notice">{notice}</p>}</main>;
 
