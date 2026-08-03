@@ -425,3 +425,26 @@ class TransactionActivityOut(BaseModel):
     status: str
     title: str
     detail: str
+
+
+class MedicationReminderCreate(BaseModel):
+    supply_id: UUID
+    enabled: bool = True
+    time_of_day: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str = Field(min_length=1, max_length=64)
+
+
+class MedicationReminderUpdate(BaseModel):
+    enabled: bool | None = None
+    time_of_day: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class MedicationReminderOut(ApiModel):
+    id: UUID
+    supply_id: UUID
+    enabled: bool
+    time_of_day: str
+    timezone: str
+    created_at: datetime
+    updated_at: datetime

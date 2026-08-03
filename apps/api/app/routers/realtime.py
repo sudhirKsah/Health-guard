@@ -16,6 +16,7 @@ from app.models import (
     ApprovedVariant,
     Beneficiary,
     LedgerEvent,
+    MedicationReminder,
     MerchantAuthorization,
     ProductEquivalenceSet,
     PurchaseOrder,
@@ -75,6 +76,9 @@ def owner_fingerprint(owner_id: UUID) -> str:
                 .scalar_subquery(),
                 select(func.max(LedgerEvent.created_at))
                 .where(LedgerEvent.owner_id == owner_id)
+                .scalar_subquery(),
+                select(func.max(MedicationReminder.updated_at))
+                .where(MedicationReminder.owner_id == owner_id)
                 .scalar_subquery(),
             )
         ).one()

@@ -58,6 +58,9 @@ class User(Timestamped, Base):
     ledger_events: Mapped[list[LedgerEvent]] = relationship(
         back_populates="owner", cascade="all, delete-orphan"
     )
+    medication_reminders: Mapped[list[MedicationReminder]] = relationship(
+        back_populates="owner", cascade="all, delete-orphan"
+    )
 
 
 class SessionToken(Base):
@@ -161,6 +164,9 @@ class Supply(Timestamped, Base):
         back_populates="supply",
         cascade="all, delete-orphan",
         order_by="StockMovement.occurred_at.desc()",
+    )
+    medication_reminders: Mapped[list[MedicationReminder]] = relationship(
+        back_populates="supply", cascade="all, delete-orphan"
     )
 
     @property
@@ -527,3 +533,22 @@ class LedgerEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
     owner: Mapped[User] = relationship(back_populates="ledger_events")
+
+
+class MedicationReminder(Timestamped, Base):
+    """A user preference that the native Health Guard app schedules on the device."""
+
+    __tablename__ = "medication_reminders"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "supply_id", name="medication_reminder_owner_supply_unique"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    supply_id: Mapped[UUID] = mapped_column(ForeignKey("supplies.id", ondelete="CASCADE"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    time_of_day: Mapped[str] = mapped_column(String(5), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    owner: Mapped[User] = relationship(back_populates="medication_reminders")
+    supply: Mapped[Supply] = relationship(back_populates="medication_reminders")
