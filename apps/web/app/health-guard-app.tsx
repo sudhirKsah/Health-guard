@@ -10,6 +10,7 @@ import { CareSetup } from "./components/care-setup";
 import { DashboardOverview } from "./components/dashboard-overview";
 import { MandateControls } from "./components/mandate-controls";
 import { PaymentTestPanel } from "./components/payment-test-panel";
+import { SetupGuide, setupSteps } from "./components/setup-guide";
 import { TransactionsPanel } from "./components/transactions-panel";
 import { TrustPanel } from "./components/trust-panel";
 import { ApiError, api, formValue, subscribeToUpdates } from "./lib/api";
@@ -309,18 +310,25 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   if (!dashboard) return <main className="auth-shell"><p className="muted">Loading your care information…</p>{notice && <p className="notice">{notice}</p>}</main>;
 
   const nav: Array<{ page: WorkspacePage; label: string; icon: string }> = [
+    // Short labels: these sit in a phone-width tap target, and the page heading already carries
+    // the long form. "Supplies" beats "Recurring supplies" wrapped onto three lines.
     { page: "dashboard", label: "Overview", icon: "⌂" },
-    { page: "beneficiaries", label: "Beneficiaries", icon: "◎" },
-    { page: "supplies", label: "Recurring supplies", icon: "↻" },
-    { page: "merchants", label: "Merchants", icon: "◇" },
-    { page: "mandates", label: "Mandates", icon: "▣" },
-    { page: "payment-test", label: "Test recurring payment", icon: "▶" },
-    { page: "transactions", label: "Payment transactions", icon: "₹" },
+    { page: "beneficiaries", label: "People", icon: "◎" },
+    { page: "supplies", label: "Supplies", icon: "↻" },
+    { page: "merchants", label: "Shops", icon: "◇" },
+    { page: "mandates", label: "Limits", icon: "▣" },
+    { page: "payment-test", label: "Test pay", icon: "▶" },
+    { page: "transactions", label: "Payments", icon: "₹" },
     { page: "activity", label: "Activity", icon: "≡" },
   ];
+  // The one step the user should do next — used to badge the sidebar so the path forward is
+  // visible from any page, not just Overview.
+  const steps = setupSteps(dashboard, transactions);
+  const nextStep = steps.find((s) => s.warn) ?? steps.find((s) => !s.done && !s.blockedBy);
+
   const setup = page === "beneficiaries" || page === "supplies" || page === "merchants" ? <CareSetup view={page} dashboard={dashboard} automationTimings={automationTimings} busy={busy} onCreate={createSetup} onToggle={toggle} onRetryProductSetup={retryProductSetup} onDeleteSupply={deleteSupply} onUpdateStock={updateStock} onSearchProducts={searchProducts} /> : null;
   const content = page === "dashboard"
-    ? <><DashboardOverview dashboard={dashboard} transactions={transactions} /><TrustPanel events={events} supplies={supplies} busy={busy} onRunningLow={signalRunningLow} /><AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} /></>
+    ? <><SetupGuide dashboard={dashboard} transactions={transactions} /><DashboardOverview dashboard={dashboard} transactions={transactions} /><TrustPanel events={events} supplies={supplies} busy={busy} onRunningLow={signalRunningLow} /><AgentRunsPanel supplies={supplies} runs={runs} busy={busy} onStart={startRun} /></>
     : page === "mandates"
       ? <MandateControls authorizations={dashboard.merchant_authorizations} busy={busy} onSetup={createMandate} onAction={mandateAction} />
       : page === "payment-test"
@@ -330,5 +338,5 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
         : page === "activity"
           ? <ActivityPanel events={events} />
         : setup;
-  return <main className="workspace"><aside className="sidebar"><Link className="brand" href="/dashboard"><span className="brand-mark">H</span><span>Health Guard</span></Link><nav>{nav.map((item) => <Link key={item.page} className={page === item.page ? "nav-active" : ""} href={`/${item.page}`}><span className="nav-icon" aria-hidden>{item.icon}</span><span>{item.label}</span></Link>)}</nav><div className="sidebar-account"><span className="account-avatar">{session.user.email.slice(0, 1).toUpperCase()}</span><div><strong>{session.user.display_name ?? "Health Guard user"}</strong><span>{session.user.email}</span></div><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></aside><section className="workspace-content"><header className="page-header"><p className="eyebrow">{heading.eyebrow}</p><h1>{heading.title}</h1><p>{heading.subtitle}</p></header>{notice && <p className="notice" role="status">{notice}</p>}{content}</section></main>;
+  return <main className="workspace"><aside className="sidebar"><Link className="brand" href="/dashboard"><span className="brand-mark">H</span><span>Health Guard</span></Link><nav>{nav.map((item) => <Link key={item.page} className={`${page === item.page ? "nav-active" : ""} ${nextStep?.page === item.page ? "nav-next" : ""}`.trim()} href={`/${item.page}`} aria-label={nextStep?.page === item.page ? `${item.label} — next step` : undefined}><span className="nav-icon" aria-hidden>{item.icon}</span><span>{item.label}</span>{nextStep?.page === item.page && <span className="nav-dot" aria-hidden />}</Link>)}</nav><div className="sidebar-account"><span className="account-avatar">{session.user.email.slice(0, 1).toUpperCase()}</span><div><strong>{session.user.display_name ?? "Health Guard user"}</strong><span>{session.user.email}</span></div><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></aside><section className="workspace-content"><header className="page-header"><p className="eyebrow">{heading.eyebrow}</p><h1>{heading.title}</h1><p>{heading.subtitle}</p></header>{notice && <p className="notice" role="status">{notice}</p>}{content}</section></main>;
 }

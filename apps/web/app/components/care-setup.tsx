@@ -44,42 +44,54 @@ function addressBody(form: HTMLFormElement) {
   };
 }
 
+const RELATIONSHIPS = ["Self", "Parent", "Partner", "Family member", "Other"];
+
+/** The delivery address, grouped by what a courier actually needs rather than one flat column. */
 function AddressFields({ person }: { person?: Beneficiary }) {
   return (
     <>
-      <label>Recipient name<small>Who the courier asks for.</small><input name="recipient" defaultValue={person?.delivery_recipient ?? person?.name ?? ""} maxLength={160} /></label>
-      <label>Address<input name="line1" placeholder="House / street" defaultValue={person?.delivery_line1 ?? ""} maxLength={255} /></label>
-      <label>Apartment, landmark (optional)<input name="line2" defaultValue={person?.delivery_line2 ?? ""} maxLength={255} /></label>
+      <label>Who should the courier ask for?<input name="recipient" defaultValue={person?.delivery_recipient ?? person?.name ?? ""} maxLength={160} placeholder="Full name" /></label>
+      <label>House and street<input name="line1" placeholder="For example, 12 Rose Lane" defaultValue={person?.delivery_line1 ?? ""} maxLength={255} /></label>
+      <label>Apartment or landmark<small>Optional</small><input name="line2" defaultValue={person?.delivery_line2 ?? ""} maxLength={255} /></label>
       <div className="split">
         <label>City<input name="city" defaultValue={person?.delivery_city ?? ""} maxLength={120} /></label>
         <label>State<input name="region" defaultValue={person?.delivery_region ?? ""} maxLength={120} /></label>
       </div>
       <div className="split">
-        <label>PIN code<input name="postal" defaultValue={person?.delivery_postal_code ?? ""} maxLength={24} /></label>
+        <label>PIN code<input name="postal" inputMode="numeric" defaultValue={person?.delivery_postal_code ?? ""} maxLength={24} /></label>
         <label>Country<input name="country" defaultValue={person?.delivery_country ?? "IN"} maxLength={2} pattern="[A-Z]{2}" /></label>
       </div>
       <div className="split">
-        <label>Phone<input name="phone" type="tel" defaultValue={person?.delivery_phone ?? ""} maxLength={32} /></label>
-        <label>Email<input name="email" type="email" defaultValue={person?.delivery_email ?? ""} maxLength={320} /></label>
+        <label>Phone<input name="phone" type="tel" inputMode="tel" defaultValue={person?.delivery_phone ?? ""} maxLength={32} placeholder="+91 …" /></label>
+        <label>Email<input name="email" type="email" inputMode="email" defaultValue={person?.delivery_email ?? ""} maxLength={320} /></label>
       </div>
     </>
   );
 }
 
 function BeneficiariesPanel({ dashboard, busy, onCreate, onToggle }: Props) {
+  const [relationship, setRelationship] = useState("Self");
   return (
     <div className="content-grid">
       <section className="card stack">
-        <div><h2>Add someone</h2><p className="hint">Choose “Self” when these supplies are for you. The delivery address decides where this person’s orders are shipped — you can add it now or later.</p></div>
-        <form className="stack compact" onSubmit={(event) => onCreate(event, "/setup/beneficiaries", {
+        <div><h2>Add someone</h2><p className="hint">Choose “Self” when these supplies are for you.</p></div>
+        <form className="supply-form" onSubmit={(event) => onCreate(event, "/setup/beneficiaries", {
           name: formValue(event.currentTarget, "name"),
-          relationship_label: formValue(event.currentTarget, "relationship"),
+          relationship_label: relationship,
           ...addressBody(event.currentTarget),
         })}>
-          <label>Name<input name="name" autoComplete="name" required maxLength={120} /></label>
-          <label>Relationship<select name="relationship" defaultValue="Self" required><option>Self</option><option>Parent</option><option>Partner</option><option>Family member</option><option>Other</option></select></label>
-          <AddressFields />
-          <button disabled={busy}>Add beneficiary</button>
+          <Step n={1} title="Who are we helping?" help="Their name, and how they relate to you.">
+            <label>Name<input name="name" autoComplete="name" required maxLength={120} placeholder="For example, Sushila" /></label>
+            <div className="chip-row">
+              {RELATIONSHIPS.map((r) => (
+                <Chip key={r} active={relationship === r} onClick={() => setRelationship(r)}>{r}</Chip>
+              ))}
+            </div>
+          </Step>
+          <Step n={2} title="Where do deliveries go?" help="Orders for this person ship here. You can add it later.">
+            <AddressFields />
+          </Step>
+          <button className="submit-cta" disabled={busy}>Add beneficiary</button>
         </form>
       </section>
       <section className="card stack">
@@ -122,6 +134,7 @@ function MerchantsPanel({ dashboard, busy, onCreate, onToggle }: Props) {
 function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle, onRetryProductSetup, onDeleteSupply, onUpdateStock, onSearchProducts }: Props) {
   const supplies = dashboard.beneficiaries.flatMap((beneficiary) => beneficiary.supplies.map((supply) => ({ supply, beneficiary })));
   const timings = new Map(automationTimings.map((timing) => [timing.supply_id, timing]));
+  const [beneficiaryId, setBeneficiaryId] = useState("");
   const [supplyName, setSupplyName] = useState("");
   const [requirements, setRequirements] = useState("");
   const [unit, setUnit] = useState("tablet");
@@ -162,6 +175,7 @@ function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle,
   const resetSupplyForm = () => {
     searchSequence.current += 1;
     selectedName.current = "";
+    setBeneficiaryId("");
     setSupplyName("");
     setRequirements("");
     setUnit("tablet");
@@ -192,8 +206,8 @@ function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle,
     <div className="content-grid supplies-layout">
       <section className="card stack">
         <div><h2>Add a recurring supply</h2><p className="hint">Use an ordinary product name. Health Guard searches live catalogs and safely chooses the product and pack.</p></div>
-        {!dashboard.beneficiaries.some((item) => item.is_active) ? <p className="empty-state">Add an active beneficiary first.</p> : <form className="stack supply-form" onReset={resetSupplyForm} onSubmit={(event) => {
-          onCreate(event, `/setup/beneficiaries/${formValue(event.currentTarget, "beneficiary")}/supplies`, {
+        {!dashboard.beneficiaries.some((item) => item.is_active) ? <p className="empty-state">Add an active beneficiary first.</p> : <form className="supply-form" onReset={resetSupplyForm} onSubmit={(event) => {
+          onCreate(event, `/setup/beneficiaries/${beneficiaryId}/supplies`, {
             name: supplyName,
             product_requirements: requirements || null,
             unit,
@@ -203,19 +217,67 @@ function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle,
             preferred_pack_quantity: preferredPack ? Number(preferredPack) : null,
           });
         }}>
-          <Field label="Who is it for?" help="Keeps every person's supplies and transactions separate."><select name="beneficiary" required defaultValue=""><option value="" disabled>Select a beneficiary</option>{dashboard.beneficiaries.filter((item) => item.is_active).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-          <Field label="Supply name" help="Start typing an ordinary name. Recommendations come from your selected merchants' live catalogs."><input name="supply" value={supplyName} onChange={(event) => { selectedName.current = ""; searchSequence.current += 1; setSupplyName(event.target.value); setSuggestions([]); setSearchedQuery(""); setSearching(false); }} placeholder="For example, Ashwagandha" required maxLength={160} autoComplete="off" /></Field>
-          {(searching || suggestions.length > 0 || (searchedQuery === supplyName.trim() && searchedQuery.length >= 3)) && <div className="catalog-suggestions" aria-live="polite">
-            <div className="suggestion-heading"><strong>Live product recommendations</strong>{searching && <span>Searching catalogs…</span>}</div>
-            {!searching && suggestions.map((suggestion) => <button type="button" className="catalog-suggestion" key={`${suggestion.merchant_key}:${suggestion.variant_id}`} onClick={() => chooseSuggestion(suggestion)}><span><b>{suggestion.product_title}</b><small>{suggestion.variant_title && suggestion.variant_title !== "Default Title" ? suggestion.variant_title : `${suggestion.pack_quantity} ${suggestion.pack_unit}s`}</small></span><span><b>{formatMoney(suggestion.unit_price, suggestion.currency)}</b><small>{suggestion.merchant_name}</small></span></button>)}
-            {!searching && !suggestions.length && <p>No live matching products were found at your selected merchants.</p>}
-          </div>}
-          <Field label="Specific product preference (optional)" help="Leave blank to let Health Guard choose. Selecting a recommendation fills this for you."><textarea name="requirements" value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="For example, Himalaya Organic Ashwagandha caplets" maxLength={1000} rows={3} /></Field>
-          <Field label="How is it counted?" help="The unit used when tracking what remains. Selecting a recommendation sets this from the catalog."><select name="unit" value={unit} onChange={(event) => { selectedName.current = ""; setUnit(event.target.value); }} required><option value="tablet">Tablets</option><option value="capsule">Capsules</option><option value="strip">Strips</option><option value="sachet">Sachets</option><option value="packet">Packets</option><option value="swab">Swabs</option><option value="bottle">Bottles</option><option value="gram">Grams</option><option value="kilogram">Kilograms</option><option value="milliliter">Milliliters</option><option value="liter">Liters</option><option value="unit">Units</option></select></Field>
-          <div className="split"><Field label="Used each day" help="How many units are consumed per day."><input name="daily" value={daily} onChange={(event) => setDaily(event.target.value)} type="number" min="0.001" step="0.001" required /></Field><Field label="Amount on hand" help="The units available today."><input name="onHand" value={onHand} onChange={(event) => setOnHand(event.target.value)} type="number" min="0" step="0.001" required /></Field></div>
-          <div className="split"><Field label="Reorder at" help="A check becomes due when estimated stock reaches this number."><input name="buffer" value={buffer} onChange={(event) => setBuffer(event.target.value)} type="number" min="0" step="0.001" required /></Field><Field label="Preferred pack size (optional)" help="Leave blank to let Health Guard choose from available pack sizes."><input name="preferredPack" value={preferredPack} onChange={(event) => setPreferredPack(event.target.value)} type="number" min="0.001" step="0.001" /></Field></div>
+          <Step n={1} title="Who is it for?" help="Keeps every person's supplies and transactions separate.">
+            <div className="person-picker">
+              {dashboard.beneficiaries.filter((item) => item.is_active).map((item) => (
+                <button
+                  type="button" key={item.id}
+                  className={`person-chip ${beneficiaryId === item.id ? "chip-on" : ""}`}
+                  aria-pressed={beneficiaryId === item.id}
+                  onClick={() => setBeneficiaryId(item.id)}
+                >
+                  <span className="avatar" aria-hidden>{item.name.slice(0, 1).toUpperCase()}</span>
+                  <span><b>{item.name}</b><small>{item.relationship_label}</small></span>
+                </button>
+              ))}
+            </div>
+          </Step>
+
+          <Step n={2} title="What should never run out?" help="Type an ordinary name — we search your shops' live catalogues.">
+            <input
+              name="supply" value={supplyName}
+              onChange={(event) => { selectedName.current = ""; searchSequence.current += 1; setSupplyName(event.target.value); setSuggestions([]); setSearchedQuery(""); setSearching(false); }}
+              placeholder="For example, Ashwagandha" required maxLength={160} autoComplete="off"
+            />
+            {(searching || suggestions.length > 0 || (searchedQuery === supplyName.trim() && searchedQuery.length >= 3)) && <div className="catalog-suggestions" aria-live="polite">
+              <div className="suggestion-heading"><strong>Live recommendations</strong>{searching && <span>Searching…</span>}</div>
+              {!searching && suggestions.map((suggestion) => <button type="button" className="catalog-suggestion" key={`${suggestion.merchant_key}:${suggestion.variant_id}`} onClick={() => chooseSuggestion(suggestion)}><span><b>{suggestion.product_title}</b><small>{suggestion.variant_title && suggestion.variant_title !== "Default Title" ? suggestion.variant_title : `${suggestion.pack_quantity} ${suggestion.pack_unit}s`}</small></span><span><b>{formatMoney(suggestion.unit_price, suggestion.currency)}</b><small>{suggestion.merchant_name}</small></span></button>)}
+              {!searching && !suggestions.length && <p>No matching products at your selected shops.</p>}
+            </div>}
+            <details className="opt-block">
+              <summary><span>Want a specific brand or pack?</span><small>Optional</small></summary>
+              <div className="opt-body">
+                <textarea name="requirements" value={requirements} onChange={(event) => setRequirements(event.target.value)} placeholder="For example, Himalaya Organic Ashwagandha caplets" maxLength={1000} rows={3} />
+                <small className="hint">Leave blank and Health Guard picks the best match itself.</small>
+              </div>
+            </details>
+          </Step>
+
+          <Step n={3} title="How is it counted?" help="Tap the unit you'd use when counting what's left.">
+            <div className="chip-row">
+              {UNITS.map((u) => (
+                <Chip key={u.value} active={unit === u.value} onClick={() => { selectedName.current = ""; setUnit(u.value); }}>{u.label}</Chip>
+              ))}
+            </div>
+          </Step>
+
+          <Step n={4} title="How much?" help="Use − and + , or type the number.">
+            <div className="stepper-grid">
+              <Stepper label="Used each day" help="How many per day" value={daily} onChange={setDaily} step={1} min={0} suffix={unit ? `${unit}s / day` : undefined} />
+              <Stepper label="Amount on hand" help="Available today" value={onHand} onChange={setOnHand} step={1} min={0} suffix={unit ? `${unit}s` : undefined} />
+              <Stepper label="Reorder at" help="Reorder when it drops to this" value={buffer} onChange={setBuffer} step={1} min={0} suffix={unit ? `${unit}s` : undefined} />
+            </div>
+            <details className="opt-block">
+              <summary><span>Prefer a particular pack size?</span><small>Optional</small></summary>
+              <div className="opt-body">
+                <input name="preferredPack" value={preferredPack} onChange={(event) => setPreferredPack(event.target.value)} type="number" inputMode="decimal" min="0.001" step="0.001" placeholder="For example, 60" />
+                <small className="hint">Leave blank to let Health Guard choose from available packs.</small>
+              </div>
+            </details>
+          </Step>
+
           {timeline && <div className={`inventory-timeline ${timeline.due ? "due" : ""}`}><span>Estimated reorder timeline</span><strong>{timeline.label}</strong><small>(amount on hand − reorder at) ÷ used each day</small></div>}
-          <button disabled={busy}>Add recurring supply</button>
+          <button className="submit-cta" disabled={busy || !beneficiaryId}>{beneficiaryId ? "Add recurring supply" : "Choose who it's for first"}</button>
         </form>}
       </section>
       <section className="card stack supply-overview"><h2>Your recurring supplies</h2>{!supplies.length && <p className="empty-state">Your supplies will appear here.</p>}{supplies.map(({ supply, beneficiary }) => <SupplyCard key={supply.id} supply={supply} timing={timings.get(supply.id)} beneficiaryName={beneficiary.name} busy={busy} onToggle={onToggle} onRetry={onRetryProductSetup} onDelete={onDeleteSupply} onUpdateStock={onUpdateStock} />)}</section>
@@ -225,6 +287,106 @@ function SuppliesPanel({ dashboard, automationTimings, busy, onCreate, onToggle,
 
 function Field({ label, help, children }: { label: string; help: string; children: React.ReactNode }) {
   return <label>{label}<small>{help}</small>{children}</label>;
+}
+
+/** One numbered section of the setup flow. Breaking the form into steps stops it reading as an
+ *  intimidating wall of eight identical inputs. */
+function Step({ n, title, help, children }: { n: number; title: string; help?: string; children: React.ReactNode }) {
+  return (
+    <section className="fstep">
+      <header><span className="fstep-n">{n}</span><div><h3>{title}</h3>{help && <small>{help}</small>}</div></header>
+      <div className="fstep-body">{children}</div>
+    </section>
+  );
+}
+
+/** A tap target instead of a dropdown. Native selects on a phone open a full-screen wheel that
+ *  hides the rest of the form; chips keep every option visible and are far easier to hit. */
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button type="button" className={`chip ${active ? "chip-on" : ""}`} aria-pressed={active} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+/** Big −/+ buttons around the value. Phone number-spinners are a few pixels tall and unusable
+ *  for anyone with reduced dexterity; these are full 52px targets. */
+function Stepper({
+  label, help, value, onChange, step = 1, min = 0, suffix,
+}: { label: string; help: string; value: string; onChange: (v: string) => void; step?: number; min?: number; suffix?: string }) {
+  const nudge = (delta: number) => {
+    const next = Math.max(min, Number((Number(value || 0) + delta).toFixed(3)));
+    onChange(String(next));
+  };
+  return (
+    <div className="stepper-field">
+      <span className="stepper-label">{label}</span>
+      <small>{help}</small>
+      <div className="stepper">
+        <button type="button" onClick={() => nudge(-step)} aria-label={`Decrease ${label}`}>−</button>
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          type="number" inputMode="decimal" min={min} step="0.001" required
+          aria-label={label}
+        />
+        <button type="button" onClick={() => nudge(step)} aria-label={`Increase ${label}`}>+</button>
+      </div>
+      {suffix && <small className="stepper-suffix">{suffix}</small>}
+    </div>
+  );
+}
+
+const UNITS = [
+  { value: "tablet", label: "Tablets" }, { value: "capsule", label: "Capsules" },
+  { value: "strip", label: "Strips" }, { value: "sachet", label: "Sachets" },
+  { value: "packet", label: "Packets" }, { value: "swab", label: "Swabs" },
+  { value: "bottle", label: "Bottles" }, { value: "gram", label: "Grams" },
+  { value: "kilogram", label: "Kilograms" }, { value: "milliliter", label: "Millilitres" },
+  { value: "liter", label: "Litres" }, { value: "unit", label: "Units" },
+];
+
+/** How much is left, as a plain-English state rather than a number to interpret.
+ *  Full = comfortably above the reorder level; the bar empties as stock approaches it. */
+function StockMeter({ supply }: { supply: Supply }) {
+  const onHand = Number(supply.estimated_quantity_on_hand);
+  const reorderAt = Number(supply.safety_buffer_quantity);
+  const daily = Number(supply.daily_consumption);
+  if (!Number.isFinite(onHand) || !Number.isFinite(reorderAt) || !Number.isFinite(daily) || daily <= 0) return null;
+
+  // A full bar is two weeks of cover above the reorder level — long enough that "full" means
+  // genuinely relaxed, short enough that the bar visibly moves week to week.
+  const headroom = Math.max(onHand - reorderAt, 0);
+  const percent = Math.max(2, Math.min(100, Math.round((headroom / (daily * 14)) * 100)));
+  const daysLeft = headroom / daily;
+
+  const tone = daysLeft <= 0 ? "critical" : daysLeft <= 3 ? "warn" : "";
+  const state = daysLeft <= 0 ? "Reorder due" : daysLeft <= 3 ? "Running low" : "Well stocked";
+  const plain =
+    daysLeft <= 0
+      ? "Stock has reached the reorder level."
+      : `About ${daysLeft < 1 ? "less than a day" : `${Math.round(daysLeft)} day${Math.round(daysLeft) === 1 ? "" : "s"}`} before the reorder level.`;
+
+  return (
+    <div className="meter">
+      <div className="meter-head">
+        <span className="meter-label">Supply level</span>
+        <span className="meter-value">{supply.estimated_quantity_on_hand} {supply.unit}s left</span>
+      </div>
+      <div
+        className="meter-track"
+        role="meter"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${state}. ${plain}`}
+      >
+        <div className={`meter-fill ${tone}`} style={{ width: `${percent}%` }} />
+      </div>
+      <span className={`meter-state ${tone}`}>{state}<span className="hint" style={{ fontWeight: 500 }}> · {plain}</span></span>
+    </div>
+  );
 }
 
 function inventoryTimeline(onHandValue: string, dailyValue: string, bufferValue: string) {
@@ -273,7 +435,8 @@ function SupplyCard({ supply, timing, beneficiaryName, busy, onToggle, onRetry, 
     <header><div><strong>{supply.name}</strong><small>For {beneficiaryName}</small></div><span className={`status-pill ${ready ? "approved" : supply.setup_status}`}>{label}</span></header>
     <p>{supply.setup_message}</p>
     {supply.agent_summary && <p className="agent-note">{supply.agent_summary}</p>}
-    <div className="supply-stats"><span><b>{supply.estimated_quantity_on_hand}</b> estimated {supply.unit}s on hand</span><span><b>{supply.daily_consumption}</b> used each day</span><span>Reorder at <b>{supply.safety_buffer_quantity}</b></span>{purchasedTotal > 0 && <span><b>+{purchasedTotal}</b> added by orders</span>}</div>
+    <StockMeter supply={supply} />
+    <div className="supply-stats"><span><b>{supply.daily_consumption}</b> used each day</span><span>Reorder at <b>{supply.safety_buffer_quantity}</b></span>{purchasedTotal > 0 && <span><b>+{purchasedTotal}</b> added by orders</span>}</div>
     {ready && <div className={`payment-readiness ${frequencyWaiting ? "waiting" : ""}`}>
       <div className="chargeable-price"><small>Current chargeable price</small><strong>{timing?.chargeable_price && timing.chargeable_currency ? formatMoney(timing.chargeable_price, timing.chargeable_currency) : "Price is being verified"}</strong><span>{timing?.merchant_name ?? "Approved merchant"}{timing?.price_checked_at ? ` · checked ${formatDateTime(timing.price_checked_at)}` : ""}</span></div>
       <div className="mandate-readiness"><small>Payment permission</small><strong>{timing?.mandate_frequency ? `Once ${timing.mandate_frequency === "weekly" ? "a week" : timing.mandate_frequency === "monthly" ? "a month" : "a year"}` : "Mandate not ready"}</strong><span>{timing?.payment_eligibility_message ?? "Checking mandate status…"}</span></div>
