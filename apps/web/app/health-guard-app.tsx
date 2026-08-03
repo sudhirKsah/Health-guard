@@ -10,11 +10,13 @@ import { CareSetup } from "./components/care-setup";
 import { DashboardOverview } from "./components/dashboard-overview";
 import { MandateControls } from "./components/mandate-controls";
 import { PaymentTestPanel } from "./components/payment-test-panel";
+import { ReminderSettings } from "./components/reminder-settings";
 import { SetupGuide, setupSteps } from "./components/setup-guide";
 import { TransactionsPanel } from "./components/transactions-panel";
 import { TrustPanel } from "./components/trust-panel";
 import { ApiError, api, formValue, subscribeToUpdates } from "./lib/api";
-import type { AgentRun, Dashboard, LedgerEvent, MandateSetupSession, ProductSuggestion, Session, SupplyAutomationTiming, TransactionActivity } from "./lib/types";
+import { isNativeHealthGuardApp, syncNativeMedicineReminders } from "./lib/native-reminders";
+import type { AgentRun, Dashboard, LedgerEvent, MandateSetupSession, MedicationReminder, ProductSuggestion, Session, SupplyAutomationTiming, TransactionActivity } from "./lib/types";
 import type { WorkspacePage } from "./workspace-page";
 
 const sessionKey = "health-guard-session";
@@ -25,6 +27,7 @@ type Snapshot = {
   events: LedgerEvent[];
   transactions: TransactionActivity[];
   automationTimings: SupplyAutomationTiming[];
+  reminders: MedicationReminder[];
   at: number;
 };
 
@@ -52,18 +55,20 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
   const [events, setEvents] = useState<LedgerEvent[]>([]);
   const [transactions, setTransactions] = useState<TransactionActivity[]>([]);
   const [automationTimings, setAutomationTimings] = useState<SupplyAutomationTiming[]>([]);
+  const [reminders, setReminders] = useState<MedicationReminder[]>([]);
   const [mode, setMode] = useState<"login" | "register">("register");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const refreshTimer = useRef<number | null>(null);
 
   const refresh = useCallback(async (activeSession: Session) => {
-    const [nextDashboard, nextRuns, nextEvents, nextTransactions, nextAutomationTimings] = await Promise.all([
+    const [nextDashboard, nextRuns, nextEvents, nextTransactions, nextAutomationTimings, nextReminders] = await Promise.all([
       api<Dashboard>("/setup/dashboard", activeSession.access_token),
       api<AgentRun[]>("/agent-runs", activeSession.access_token),
       api<LedgerEvent[]>("/ledger/events", activeSession.access_token),
       api<TransactionActivity[]>("/activity/transactions", activeSession.access_token),
       api<SupplyAutomationTiming[]>("/agent-runs/automation-timing", activeSession.access_token),
+      api<MedicationReminder[]>("/reminders", activeSession.access_token),
     ]);
     snapshot = {
       dashboard: nextDashboard,
@@ -71,6 +76,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
       events: nextEvents,
       transactions: nextTransactions,
       automationTimings: nextAutomationTimings,
+      reminders: nextReminders,
       at: Date.now(),
     };
     setDashboard(nextDashboard);
@@ -78,6 +84,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     setEvents(nextEvents);
     setTransactions(nextTransactions);
     setAutomationTimings(nextAutomationTimings);
+    setReminders(nextReminders);
   }, []);
 
   const applySnapshot = useCallback((cached: Snapshot) => {
@@ -86,6 +93,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     setEvents(cached.events);
     setTransactions(cached.transactions);
     setAutomationTimings(cached.automationTimings);
+    setReminders(cached.reminders);
   }, []);
 
   const endSession = useCallback(() => {
@@ -97,6 +105,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     setEvents([]);
     setTransactions([]);
     setAutomationTimings([]);
+    setReminders([]);
   }, []);
 
   useEffect(() => {
@@ -184,6 +193,15 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     }, ACTIVE_SYNC_MS);
     return () => { stopped = true; window.clearInterval(timer); };
   }, [activeMandateKey, session]);
+
+  // Preferences are stored in the account, while Android owns delivery. Reconcile the native
+  // scheduler whenever a signed-in user opens the mobile app or changes a reminder.
+  useEffect(() => {
+    if (!isNativeHealthGuardApp() || !dashboard) return;
+    void syncNativeMedicineReminders(reminders, supplies).catch((error) => {
+      setNotice(error instanceof Error ? error.message : "Open Android settings to enable medicine reminders.");
+    });
+  }, [dashboard, reminders, supplies]);
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -293,6 +311,68 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     finally { setBusy(false); }
   }
 
+  async function syncReminders(nextReminders: MedicationReminder[]) {
+    if (!dashboard) return;
+    await syncNativeMedicineReminders(
+      nextReminders,
+      dashboard.beneficiaries.flatMap((beneficiary) => beneficiary.supplies),
+    );
+  }
+
+  async function createReminder(payload: { supply_id: string; enabled: boolean; time_of_day: string; timezone: string }) {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try {
+      const created = await api<MedicationReminder>("/reminders", session.access_token, { method: "POST", body: JSON.stringify(payload) });
+      const nextReminders = [...reminders, created];
+      setReminders(nextReminders);
+      await refresh(session);
+      try {
+        await syncReminders(nextReminders);
+        setNotice("Daily medicine reminder saved.");
+      } catch (error) {
+        setNotice(`Reminder saved. ${error instanceof Error ? error.message : "Open Android settings to finish enabling it."}`);
+      }
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not save the medicine reminder"); }
+    finally { setBusy(false); }
+  }
+
+  async function updateReminder(id: string, payload: { enabled?: boolean; time_of_day?: string; timezone?: string }) {
+    if (!session) return;
+    setBusy(true); setNotice("");
+    try {
+      const updated = await api<MedicationReminder>(`/reminders/${id}`, session.access_token, { method: "PATCH", body: JSON.stringify(payload) });
+      const nextReminders = reminders.map((reminder) => reminder.id === id ? updated : reminder);
+      setReminders(nextReminders);
+      await refresh(session);
+      try {
+        await syncReminders(nextReminders);
+        setNotice(updated.enabled ? "Daily medicine reminder updated." : "Medicine reminder disabled.");
+      } catch (error) {
+        setNotice(`Reminder preference updated. ${error instanceof Error ? error.message : "Open Android settings to finish enabling it."}`);
+      }
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not update the medicine reminder"); }
+    finally { setBusy(false); }
+  }
+
+  async function deleteReminder(id: string) {
+    if (!session || !window.confirm("Remove this daily medicine reminder?")) return;
+    setBusy(true); setNotice("");
+    try {
+      const nextReminders = reminders.filter((reminder) => reminder.id !== id);
+      await api<void>(`/reminders/${id}`, session.access_token, { method: "DELETE" });
+      setReminders(nextReminders);
+      await refresh(session);
+      try {
+        await syncReminders(nextReminders);
+        setNotice("Medicine reminder removed.");
+      } catch (error) {
+        setNotice(`Reminder removed from Health Guard. ${error instanceof Error ? error.message : "The old device alert may need to be removed in Android settings."}`);
+      }
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Could not remove the medicine reminder"); }
+    finally { setBusy(false); }
+  }
+
   const searchProducts = useCallback(async (query: string): Promise<ProductSuggestion[]> => {
     if (!session) return [];
     const parameters = new URLSearchParams({ query });
@@ -320,6 +400,7 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
     { page: "payment-test", label: "Test pay", icon: "▶" },
     { page: "transactions", label: "Payments", icon: "₹" },
     { page: "activity", label: "Activity", icon: "≡" },
+    { page: "settings", label: "Settings", icon: "⚙" },
   ];
   // The one step the user should do next — used to badge the sidebar so the path forward is
   // visible from any page, not just Overview.
@@ -337,6 +418,8 @@ export function HealthGuardApp({ page, heading }: { page: WorkspacePage; heading
         ? <TransactionsPanel transactions={transactions} />
         : page === "activity"
           ? <ActivityPanel events={events} />
+          : page === "settings"
+            ? <ReminderSettings dashboard={dashboard} reminders={reminders} busy={busy} onCreate={createReminder} onUpdate={updateReminder} onDelete={deleteReminder} />
         : setup;
   return <main className="workspace"><aside className="sidebar"><Link className="brand" href="/dashboard"><span className="brand-mark">H</span><span>Health Guard</span></Link><nav>{nav.map((item) => <Link key={item.page} className={`${page === item.page ? "nav-active" : ""} ${nextStep?.page === item.page ? "nav-next" : ""}`.trim()} href={`/${item.page}`} aria-label={nextStep?.page === item.page ? `${item.label} — next step` : undefined}><span className="nav-icon" aria-hidden>{item.icon}</span><span>{item.label}</span>{nextStep?.page === item.page && <span className="nav-dot" aria-hidden />}</Link>)}</nav><div className="sidebar-account"><span className="account-avatar">{session.user.email.slice(0, 1).toUpperCase()}</span><div><strong>{session.user.display_name ?? "Health Guard user"}</strong><span>{session.user.email}</span></div><button className="quiet" type="button" onClick={signOut}>Sign out</button></div></aside><section className="workspace-content"><header className="page-header"><p className="eyebrow">{heading.eyebrow}</p><h1>{heading.title}</h1><p>{heading.subtitle}</p></header>{notice && <p className="notice" role="status">{notice}</p>}{content}</section></main>;
 }

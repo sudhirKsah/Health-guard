@@ -2,7 +2,7 @@
 
 import { HealthGuardApp } from "./health-guard-app";
 
-export type WorkspacePage = "dashboard" | "beneficiaries" | "supplies" | "merchants" | "mandates" | "payment-test" | "transactions" | "activity";
+export type WorkspacePage = "dashboard" | "beneficiaries" | "supplies" | "merchants" | "mandates" | "payment-test" | "transactions" | "activity" | "settings";
 
 const labels: Record<WorkspacePage, { eyebrow: string; title: string; subtitle: string }> = {
   dashboard: { eyebrow: "Overview", title: "Everything important, at a glance.", subtitle: "Live supply, payment, and agent updates without refreshing." },
@@ -13,6 +13,7 @@ const labels: Record<WorkspacePage, { eyebrow: string; title: string; subtitle: 
   "payment-test": { eyebrow: "Sandbox payment test", title: "Verify recurring payments safely.", subtitle: "Run one confirmed payment through the same product, policy and Prava mandate flow used by the agent." },
   transactions: { eyebrow: "Payment transactions", title: "Every payment result, clearly shown.", subtitle: "Approved, declined and processing payments appear here in real time." },
   activity: { eyebrow: "Activity", title: "See what Health Guard has been doing.", subtitle: "Supply setup, changes and agent decisions without payment transaction noise." },
+  settings: { eyebrow: "Settings", title: "Care preferences and daily reminders.", subtitle: "Set a daily medicine reminder for the native Health Guard app." },
 };
 
 export function WorkspacePage({ page }: { page: WorkspacePage }) {

@@ -559,6 +559,13 @@ textarea { resize: vertical; line-height: 1.55; min-height: 92px; }
 .test-reason { margin: 0; color: var(--ink-muted); font-size: 0.86rem; line-height: 1.5; }
 .sandbox-note { margin: 0; padding: 14px 15px; border: 1px solid #ecd6ac; border-radius: var(--r-md); background: var(--warn-fill); color: var(--warn); font-size: 0.86rem; line-height: 1.5; }
 
+/* ══ DAILY MEDICINE REMINDERS ═════════════════════════════════════════════ */
+.reminder-form { display: grid; gap: var(--gap); }
+.reminder-row { display: grid; gap: 12px; align-items: end; }
+.reminder-row > div { display: grid; gap: 3px; }
+.reminder-row small { line-height: 1.45; }
+.reminder-time { max-width: 190px; }
+
 /* ══ TABLET — 640px and up ════════════════════════════════════════════════ */
 @media (min-width: 640px) {
   :root { --pad: 1.5rem; --gap: 16px; --r-lg: 24px; }
@@ -609,6 +616,8 @@ textarea { resize: vertical; line-height: 1.55; min-height: 92px; }
   .person-picker { grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); }
   .stepper-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); }
   .submit-cta { width: 100%; }
+  .reminder-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+  .reminder-row button { width: auto; }
 }
 
 /* ══ DESKTOP — 1100px and up: bottom nav becomes a sidebar ═══════════════ */

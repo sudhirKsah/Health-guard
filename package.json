@@ -3,7 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "workspaces": [
-    "apps/web"
+    "apps/web",
+    "apps/mobile"
   ],
   "scripts": {
     "dev:web": "npm run dev --workspace @health-guard/web",
@@ -11,6 +12,9 @@
     "build:web": "npm run build --workspace @health-guard/web",
     "lint:web": "npm run lint --workspace @health-guard/web",
     "typecheck:web": "npm run typecheck --workspace @health-guard/web",
+    "build:mobile": "npm run build:mobile --workspace @health-guard/web",
+    "sync:android": "npm run sync:android --workspace @health-guard/mobile",
+    "open:android": "npm run open:android --workspace @health-guard/mobile",
     "db:start": "bash scripts/db/start.sh",
     "db:status": "bash scripts/db/status.sh",
     "db:stop": "bash scripts/db/stop.sh"

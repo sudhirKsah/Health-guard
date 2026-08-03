@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "prava-sdk-integration": {
+      "source": "Prava-Payments/prava-skills",
+      "sourceType": "github",
+      "skillPath": "prava-sdk-integration/SKILL.md",
+      "computedHash": "e705067b82433dd5b039d324f88c3c8c821ecdc525db3d394a717cdfed44c9d8"
+    }
+  }
+}

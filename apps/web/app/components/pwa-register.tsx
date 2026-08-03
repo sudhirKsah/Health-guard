@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>;
@@ -11,7 +12,11 @@ export function PwaRegister() {
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== "production" || !("serviceWorker" in navigator)) return;
+    if (
+      Capacitor.isNativePlatform()
+      || process.env.NODE_ENV !== "production"
+      || !("serviceWorker" in navigator)
+    ) return;
 
     void navigator.serviceWorker.register("/sw.js", { scope: "/" });
     const onBeforeInstallPrompt = (event: Event) => {

@@ -191,3 +191,13 @@ export type TransactionActivity = {
   title: string;
   detail: string;
 };
+
+export type MedicationReminder = {
+  id: string;
+  supply_id: string;
+  enabled: boolean;
+  time_of_day: string;
+  timezone: string;
+  created_at: string;
+  updated_at: string;
+};

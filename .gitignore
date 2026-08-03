@@ -6,8 +6,10 @@
 # Dependencies and build output
 node_modules/
 .next/
+.gradle/
 dist/
 build/
+/apps/web/out/
 
 # Python tooling
 .venv/
@@ -37,3 +39,6 @@ next-env.d.ts
 
 
 docs/
+# Only ignore a top-level local mobile scratch directory. `apps/mobile` contains
+# the Capacitor project and its native Android source, which must be versioned.
+/mobile/
